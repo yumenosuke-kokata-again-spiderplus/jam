@@ -3,6 +3,7 @@
 output shapes observed from Claude Code 2.1.300, with generic ids and paths."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -324,6 +325,15 @@ class SubprocessRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = run_subprocess([sys.executable, "-c", "import os; print(os.getcwd())"], tmp)
             self.assertEqual(Path(result.stdout.strip()).resolve(), Path(tmp).resolve())
+
+    def test_a_command_given_no_directory_runs_in_the_root_even_when_ours_was_deleted(self):
+        # `claude` and `devin` both refuse to run in a deleted directory, and a child inherits ours.
+        self.addCleanup(os.chdir, os.getcwd())
+        gone = tempfile.mkdtemp()
+        os.chdir(gone)
+        os.rmdir(gone)
+        result = run_subprocess([sys.executable, "-I", "-c", "import os; print(os.getcwd())"], None)
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "/"), result.stderr)
 
 
 if __name__ == "__main__":

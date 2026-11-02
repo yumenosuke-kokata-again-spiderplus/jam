@@ -34,7 +34,7 @@ from ..errors import (
     WorkspaceNotTrusted,
 )
 from ..session import Session, Spawned, is_id
-from .claude import Runner, run_subprocess
+from .claude import NEUTRAL_DIR, Runner, run_subprocess
 
 SPAWN_VISIBLE: Final = 20.0  # bound for the new session to appear in `devin list`
 POLL: Final = 0.4
@@ -284,6 +284,7 @@ class DevinHarness:
             return
         probe = subprocess.run(
             ["ps", "-o", "comm=", "-p", str(pid)],
+            cwd=NEUTRAL_DIR,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,

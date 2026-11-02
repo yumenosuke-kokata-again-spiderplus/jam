@@ -26,6 +26,10 @@ from ..errors import (
 from ..session import Session, Spawned
 
 DEFAULT_TIMEOUT: Final = 60.0
+# Where a command that needs no directory runs. A child otherwise inherits this process's
+# directory, and `claude` and `devin` both refuse to run once that was deleted (a worktree
+# cleaned up under a running MCP server); the root always exists (D12).
+NEUTRAL_DIR: Final = "/"
 
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SPAWNED: Final = re.compile(r"^backgrounded\s*·\s*([0-9a-f]{8})(?:\s*·\s*(\S.*?))?\s*$", re.MULTILINE)
@@ -58,14 +62,14 @@ Runner = Callable[[list[str], Optional[str]], RunResult]
 
 
 def run_subprocess(args: Sequence[str], cwd: str | None, timeout: float = DEFAULT_TIMEOUT) -> RunResult:
-    """Run a command with stdin closed and a timeout, without a shell.
+    """Run a command with stdin closed and a timeout, without a shell, in `cwd` or else the root.
 
     Arguments (a prompt, for one) are never echoed into error messages.
     """
     try:
         proc = subprocess.run(
             list(args),
-            cwd=cwd,
+            cwd=NEUTRAL_DIR if cwd is None else cwd,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
