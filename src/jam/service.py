@@ -16,13 +16,21 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from .errors import HarnessError, RegistryError
+from .naming import prefixed, project_label
 from .registry import Record, Registry, spawned_marked
-from .session import Session, Spawned
+from .session import NO_OPTIONS, Session, SpawnOptions, Spawned
 
 
 class Harness(Protocol):
+    names_sessions: bool  # whether `spawn` takes a name; only then does the name get its project prefix (D19)
+
     def spawn(
-        self, cwd: str | Path, prompt: str, name: str | None = None, permission_mode: str | None = None
+        self,
+        cwd: str | Path,
+        prompt: str,
+        name: str | None = None,
+        permission_mode: str | None = None,
+        options: SpawnOptions = NO_OPTIONS,
     ) -> Spawned: ...
 
     def list(self, include_exited: bool = False, cwd: str | None = None) -> list[Session]: ...
@@ -91,19 +99,27 @@ class Jam:
         self._tickets = tickets
 
     def spawn(
-        self, cwd: str | Path, prompt: str, name: str | None = None, permission_mode: str | None = None
+        self,
+        cwd: str | Path,
+        prompt: str,
+        name: str | None = None,
+        permission_mode: str | None = None,
+        options: SpawnOptions = NO_OPTIONS,
     ) -> SpawnResult:
         """Write the spawn ticket, start a session, then note that jam started it.
 
+        A harness that names sessions gets the name with the project in front (D19).
         The ticket exists before the harness runs, so the session's first start can
         claim it, and it is withdrawn when the harness raises. Harness failures
         propagate and nothing is noted. Once the session exists, no registry or
         ticket failure may hide its id, and the registry lock is never held while
         the harness runs.
         """
+        if self._harness.names_sessions:
+            name = prefixed(name, project_label(cwd))
         ticket, ticket_error = self._issued(cwd)
         try:
-            spawned = self._harness.spawn(cwd, prompt, name, permission_mode)
+            spawned = self._harness.spawn(cwd, prompt, name, permission_mode, options)
         except BaseException:
             self._withdrawn(ticket)
             raise

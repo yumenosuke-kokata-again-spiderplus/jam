@@ -324,7 +324,8 @@ pass).
   background sessions flowed both ways for every mode tried (see "Cross-session
   messages and permission modes" under "Plugin platform facts"), so nothing
   calls for choosing one. If it is ever exposed, use an owner-visible allowlist
-  that never accepts a bypass-class mode.
+  that never accepts a bypass-class mode. The model, effort and subagent model
+  are offered, because they do not change what a session may do (D18).
 - **The launcher is `scripts/jam`, not `bin/`.** The plugin documentation puts
   every `bin/` file on the Bash tool's PATH while the plugin is enabled, which
   would add an unrequested bare `jam` command that fails without `--data-dir` and
@@ -1069,6 +1070,99 @@ a `remove` verb.
   were gone from `claude agents --all` within about half a minute, before any
   `stop` or `rm` was run on them, so a session can vanish between the listing
   and the deletion.
+
+## D18. Choosing the model per session
+
+Decided on 2026-11-02, from issue #35 and the owner's request after a day of
+parallel background sessions in one repository. Every worker ran on whatever
+model and effort the owner's settings held at the moment it started, so design
+work, hard debugging, documentation and mechanical edits all got the same tier.
+
+- **The parameters.** `spawn` takes three optional choices, rows of the one
+  operations table (D12): `model` (`--model`), `effort` (`--effort`) and
+  `subagent_model` (`--subagent-model`). An omitted one leaves the owner's
+  setting in charge. The Claude adapter maps them to `claude --bg --model M
+  --effort E --settings '{"env":{"CLAUDE_CODE_SUBAGENT_MODEL":"S"}}'`.
+- **Why the model may choose them, unlike `permission_mode` (D12).** A
+  permission mode decides which tool calls run without the owner's approval, so
+  a mode chosen by the model would go around D8. A model, an effort and a
+  subagent model change what a session costs and how well it reasons, never
+  what it may do: every permission rule, hook and first-use approval applies as
+  before. A poor choice gives a slower, costlier or weaker worker, which the
+  spawner can stop. The tier table the owner uses is personal tuning and lives
+  in the owner's own configuration; the skill (D15) gives only the generic rule.
+- **The subagent model travels with the session.** The owner's subagent model
+  is one global setting that concurrent sessions share, and it can be rewritten
+  while workers run, so a worker would otherwise inherit whatever another
+  session last wrote. `--settings` with a JSON string gives that one process
+  the variable and writes no file. An environment variable set by the spawner
+  would not do: it does not reach the worker (see "Plugin platform facts").
+- **Checks.** A model is an alias or an id of letters, digits, `.`, `_` and
+  `-`, at most 64 characters, that does not start with `-`, so it never reads
+  as a flag; effort is one of `low`, `medium`, `high`, `xhigh` and `max`. Like a
+  name, they are the adapter's to check (D12), with the pattern and the levels
+  kept in the core so both adapters use the same ones. jam keeps no list of
+  model names, since that list changes with versions and accounts. On Claude
+  Code an unknown name is not refused: the session starts and falls back to the
+  default model (see "Verified").
+- **The Devin CLI (D16).** `model` maps to `devin --model`. Devin has no
+  per-session effort and no subagent model, so either is refused before
+  anything runs, in the same way as a name.
+- **Verified (2026-11-02, Claude Code 2.1.295).** A throwaway worker started
+  through the command line of this change with `--model sonnet --effort low
+  --subagent-model opus`, while the owner's settings named `haiku` as the
+  subagent model, recorded `claude-sonnet-5-5` with effort `low` on every turn
+  of its transcript, its subagent recorded `claude-opus-5-5`, and `echo
+  $CLAUDE_CODE_SUBAGENT_MODEL` in its Bash printed `opus`. The checksum of the
+  user settings file was the same before and after. A worker started with
+  `--model no-such-model-x1` was not refused: its screen showed "Switched to
+  Opus 5.5 because no-such-model-x1 is not available", and it answered on the
+  default model. The Devin side is covered by unit tests only.
+- **Rejected.** Exposing `permission_mode` alongside (D12 stands). A list of
+  allowed models in jam: it would go stale, and which model fits which task is
+  the owner's tuning. Setting `CLAUDE_CODE_SUBAGENT_MODEL` in the spawner's
+  environment: it does not reach the worker. `--fallback-model`: nothing asked
+  for it.
+
+## D19. The project in a session's name
+
+Decided on 2026-11-02, from issue #36. With jam used in several projects at
+once, the `claude agents` screen did not show which session belonged to which
+project.
+
+- **The label.** The project is named by a directory: the main checkout of the
+  repository the spawn directory belongs to, else the spawn directory itself. A
+  linked worktree therefore names its main checkout, not the worktree's own
+  directory, which is usually named after a branch. The repository is found by
+  reading files, as the guard does (D14), so no `git` process runs. The
+  directory name is cut down to the characters a name allows: every run of other
+  characters becomes `-`, and leading and trailing `.`, `_` and `-` go. When
+  nothing is left, there is no label.
+- **The name.** A name the caller gives becomes `<label>-<name>`, unless it
+  already is the label or starts with the label and a dash, compared without
+  case. The caller's part is never cut: the label is shortened to keep the whole
+  within 64 characters, and left off when none of it fits. An invalid name is
+  passed on unchanged, so the adapter refuses it as before.
+- **No name, no prefix.** When the caller gives no name, jam passes none. In a
+  check on 2026-11-02 a session started without one was titled from its brief by
+  Claude Code (`jam-test-throwaway-check`), while one started with `-n jam` kept
+  `jam` after its turn. Naming every unnamed session with the label alone would
+  replace those titles with one name shared by all of them, and `SendMessage`
+  refuses a name that two sessions share until the `[ref]` is added. The
+  `spawn` description and the skill ask for a name.
+- **Which harness.** An adapter declares whether its sessions take a name. The
+  Claude adapter does; the Devin adapter refuses a name (D16), so nothing is
+  prefixed there. The rule lives in the core (`naming`), and the service applies
+  it before the adapter runs.
+- **Verified (2026-11-02, Claude Code 2.1.295).** A worker spawned with
+  `--name check-model` in this repository's main checkout came back as
+  `jam-check-model` from `spawn`, was listed under that name by `claude agents
+  --json`, and a `SendMessage` to the bare name `jam-check-model` reached it and
+  drew its reply.
+- **Rejected.** `git rev-parse --show-toplevel`: it starts a process and names
+  a worktree after its own directory. The label alone as the name of an unnamed
+  session, for the reason above. Cutting the caller's name to make room: two
+  names that differ only at the end would become one.
 
 ## Plugin platform facts
 

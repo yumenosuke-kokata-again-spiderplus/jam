@@ -27,7 +27,7 @@ HEAD = "jam lets this session start, list, stop and close agent sessions in othe
 RUN = f"Run jam through Bash exactly as: {PREFIX} COMMAND"
 RUN_WITHOUT_DATA = f"Run jam through Bash exactly as: {PLAIN} COMMAND"
 RUN_UNAVAILABLE = "The jam command line is unavailable here; use the MCP tools."
-COMMANDS = "Commands: spawn --cwd ABS_DIR [--name NAME] -- BRIEF | list [--include-exited] [--cwd ABS_DIR] | stop ID | close ID | whoami"
+COMMANDS = "Commands: spawn --cwd ABS_DIR [--name NAME] [--model M] [--effort E] [--subagent-model S] -- BRIEF | list [--include-exited] [--cwd ABS_DIR] | stop ID | close ID | whoami"
 QUOTE = "Quote every value (ABS_DIR, NAME, BRIEF, ID) as one shell word, so spaces, quotes and dollar signs stay literal."
 MCP = "The same operations are MCP tools when the server is connected: mcp__plugin_jam_jam__spawn, __list, __stop, __close, __whoami."
 NO_NOTES = "No usable data directory was found, so jam keeps no notes in this session; spawn and list still work."
@@ -220,7 +220,7 @@ def command_forms(text):
 def argv_of(form, optional):
     """The argv of one command form with placeholders filled in, with or without its [optional] parts."""
     form = form.replace("[", "").replace("]", "") if optional else re.sub(r"\[[^\]]*\]", "", form)
-    substitutes = {"ABS_DIR": "/abs/dir", "NAME": "worker-1", "BRIEF": "do the thing", "ID": "aaaa1111"}
+    substitutes = {"ABS_DIR": "/abs/dir", "NAME": "worker-1", "M": "sonnet", "E": "low", "S": "haiku", "BRIEF": "do the thing", "ID": "aaaa1111"}
     return [substitutes.get(token, token) for token in shlex.split(form)]
 
 

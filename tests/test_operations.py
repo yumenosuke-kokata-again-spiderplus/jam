@@ -19,6 +19,7 @@ from jam.errors import HarnessError, InvalidRequest, RegistryError, UnparseableO
 from jam.harness.claude import ClaudeHarness
 from jam.registry import Registry, spawned_marked
 from jam.service import Jam
+from jam.session import SpawnOptions
 
 from test_claude_harness import FakeRunner
 from test_service import FakeHarness, StubRegistry, session
@@ -88,6 +89,10 @@ REJECTED = [
     ("spawn", {"cwd": 5, "prompt": "p"}, "cwd"),
     ("spawn", {"cwd": "/work/x", "prompt": ["p"]}, "prompt"),
     ("spawn", {"cwd": "/work/x", "prompt": "p", "name": 7}, "name"),
+    ("spawn", {"cwd": "/work/x", "prompt": "p", "model": 7}, "model"),
+    ("spawn", {"cwd": "/work/x", "prompt": "p", "effort": True}, "effort"),
+    ("spawn", {"cwd": "/work/x", "prompt": "p", "subagent_model": ["haiku"]}, "subagent_model"),
+    ("spawn", {"cwd": "/work/x", "prompt": "p", "model": "\ud800"}, "model"),
     ("spawn", {"cwd": "relative/dir", "prompt": "p"}, "cwd"),
     ("spawn", {"cwd": "", "prompt": "p"}, "cwd"),
     ("list", {"include_exited": "false"}, "include_exited"),
@@ -132,7 +137,7 @@ class RegistryPinTest(unittest.TestCase):
 
     def test_every_schema_is_closed_and_names_the_right_keys(self):
         expected = {
-            "spawn": ({"cwd", "prompt", "name"}, {"cwd", "prompt"}),
+            "spawn": ({"cwd", "prompt", "name", "model", "effort", "subagent_model"}, {"cwd", "prompt"}),
             "list": ({"include_exited", "cwd"}, set()),
             "stop": ({"id"}, {"id"}),
             "close": ({"id"}, {"id"}),
@@ -151,7 +156,7 @@ class RegistryPinTest(unittest.TestCase):
     def test_property_types(self):
         spawn = operations.input_schema(operations.lookup("spawn"))["properties"]
         listing = operations.input_schema(operations.lookup("list"))["properties"]
-        self.assertEqual([spawn[key]["type"] for key in ("cwd", "prompt", "name")], ["string"] * 3)
+        self.assertEqual([spawn[key]["type"] for key in ("cwd", "prompt", "name", "model", "effort", "subagent_model")], ["string"] * 6)
         self.assertEqual(listing["include_exited"]["type"], "boolean")
         self.assertEqual(listing["cwd"]["type"], "string")
 
@@ -232,6 +237,18 @@ class SpawnOperationTest(unittest.TestCase):
         self.assertEqual(list(payload(outcome)), ["id", "name", "problem"])
         self.assertEqual(harness.spawn_calls, [("/work/x", "do it", "worker-c", None)])
         self.assertEqual(stub.updates, ["cccc3333"])
+
+    def test_the_model_effort_and_subagent_model_reach_the_harness_as_options(self):
+        harness = FakeHarness()
+        arguments = {"cwd": "/work/x", "prompt": "p", "model": "sonnet", "effort": "low", "subagent_model": "haiku"}
+        self.assertTrue(run_operation("spawn", arguments, harness=harness).ok)
+        self.assertEqual(harness.spawn_options, [SpawnOptions(model="sonnet", effort="low", subagent_model="haiku")])
+
+    def test_omitted_or_null_options_reach_the_harness_as_none_chosen(self):
+        for arguments in ({"cwd": "/work/x", "prompt": "p"}, {"cwd": "/work/x", "prompt": "p", "model": None, "effort": None, "subagent_model": None}):
+            harness = FakeHarness()
+            self.assertTrue(run_operation("spawn", arguments, harness=harness).ok)
+            self.assertEqual(harness.spawn_options, [SpawnOptions()])
 
     def test_an_omitted_or_null_name_reaches_the_harness_as_none(self):
         for arguments in ({"cwd": "/work/x", "prompt": "p"}, {"cwd": "/work/x", "prompt": "p", "name": None}):

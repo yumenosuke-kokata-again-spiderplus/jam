@@ -33,7 +33,7 @@ from ..errors import (
     StillListed,
     WorkspaceNotTrusted,
 )
-from ..session import Session, Spawned, is_id
+from ..session import NO_OPTIONS, Session, SpawnOptions, Spawned, is_id, is_model
 from .claude import Runner, run_subprocess
 
 SPAWN_VISIBLE: Final = 20.0  # bound for the new session to appear in `devin list`
@@ -71,11 +71,26 @@ def _spawn_detached(args: Sequence[str], cwd: str) -> tuple[subprocess.Popen[byt
     return proc, log
 
 
+def _chosen_model(options: object) -> Optional[str]:
+    """The model to pass as `devin --model`, or None; InvalidRequest for a choice this harness cannot take."""
+    if not isinstance(options, SpawnOptions):
+        raise InvalidRequest("invalid spawn options")
+    if options.effort is not None:
+        raise InvalidRequest("this harness has no per-session effort; pass no effort")
+    if options.subagent_model is not None:
+        raise InvalidRequest("this harness has no subagent model; pass no subagent model")
+    if options.model is not None and not is_model(options.model):
+        raise InvalidRequest(f"invalid model: {options.model!r}")
+    return options.model
+
+
 # (args, cwd) -> (process-with-pid/poll, log path); the seam that keeps tests from starting sessions.
 Spawner = Callable[[Sequence[str], str], "tuple[Any, str]"]
 
 
 class DevinHarness:
+    names_sessions: Final = False  # Devin titles a session itself, so a name is refused and no prefix is made (D19)
+
     def __init__(
         self,
         devin_bin: str = "devin",
@@ -98,8 +113,13 @@ class DevinHarness:
         prompt: str,
         name: str | None = None,
         permission_mode: str | None = None,
+        options: SpawnOptions = NO_OPTIONS,
     ) -> Spawned:
-        """Start a session in `cwd`: `devin -p` detached, id found via `devin list`."""
+        """Start a session in `cwd`: `devin -p` detached, id found via `devin list`.
+
+        A chosen model maps to `devin --model`. Devin has no per-session effort and
+        no subagent model, so either is refused, as a name is (D18).
+        """
         if not isinstance(cwd, (str, os.PathLike)) or not Path(cwd).is_dir():
             raise InvalidRequest(f"not a directory: {cwd!r}")
         if not isinstance(prompt, str) or not prompt.strip():
@@ -110,12 +130,14 @@ class DevinHarness:
             raise InvalidRequest("this harness names sessions itself; pass no name")
         if permission_mode is not None and not _matches(_MODE, permission_mode):
             raise InvalidRequest(f"invalid permission mode: {permission_mode!r}")
+        model = _chosen_model(options)
 
         target = str(Path(cwd).resolve())
         before = self._listed_ids(target)
         args = [
             self._bin,
             *(["--permission-mode", permission_mode] if permission_mode is not None else []),
+            *(["--model", model] if model is not None else []),
             "-p",
             prompt,
         ]

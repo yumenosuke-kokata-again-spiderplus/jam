@@ -8,6 +8,7 @@ the platform's, and it is read only to find the default configuration directory.
 
 from __future__ import annotations
 
+import json
 import posixpath
 from collections.abc import Mapping
 from pathlib import PurePath
@@ -22,6 +23,8 @@ JOB_DIR_VAR: Final = "CLAUDE_JOB_DIR"
 PROJECT_DIR_VAR: Final = "CLAUDE_PROJECT_DIR"
 CONFIG_DIR_VAR: Final = "CLAUDE_CONFIG_DIR"
 HOME_VAR: Final = "HOME"
+# Not read: `spawn` sets it for one new session through `--settings` (D18).
+SUBAGENT_MODEL_VAR: Final = "CLAUDE_CODE_SUBAGENT_MODEL"
 # The variables only a real Claude session or hook process sets; used to tell
 # this harness apart when another harness's variables are also inherited.
 MARKERS: Final = (SESSION_ID_VAR, JOB_DIR_VAR, DATA_DIR_VAR, PROJECT_DIR_VAR, CONFIG_DIR_VAR)
@@ -73,3 +76,8 @@ def identity(env: Mapping[str, str]) -> Identity:
         raise HarnessError(f"{SESSION_ID_VAR} is not set to a valid session id")
     short = PurePath(env.get(JOB_DIR_VAR) or "").name
     return Identity(session_id, short if is_id(short) and session_id.startswith(short) else None)
+
+
+def subagent_settings(model: str) -> str:
+    """The `--settings` value that gives one new session its own subagent model; no settings file is touched (D18)."""
+    return json.dumps({"env": {SUBAGENT_MODEL_VAR: model}})

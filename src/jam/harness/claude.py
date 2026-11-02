@@ -23,7 +23,8 @@ from ..errors import (
     UnparseableOutput,
     WorkspaceNotTrusted,
 )
-from ..session import Session, Spawned
+from ..session import EFFORTS, NO_OPTIONS, Session, SpawnOptions, Spawned, is_model
+from .claude_env import subagent_settings
 
 DEFAULT_TIMEOUT: Final = 60.0
 
@@ -44,6 +45,19 @@ _OVERRIDES: Final = ("--discard-unpushed", "--force-remove-worktree", "ctrl+x", 
 def _matches(pattern: re.Pattern[str], value: object) -> bool:
     """True only for a string that matches in full; any other type simply does not match."""
     return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def _checked_options(options: object) -> SpawnOptions:
+    """`options` when every choice in it is one `claude` can take, else InvalidRequest naming the first that is not."""
+    if not isinstance(options, SpawnOptions):
+        raise InvalidRequest("invalid spawn options")
+    if options.model is not None and not is_model(options.model):
+        raise InvalidRequest(f"invalid model: {options.model!r}")
+    if options.effort is not None and (not isinstance(options.effort, str) or options.effort not in EFFORTS):
+        raise InvalidRequest(f"invalid effort: {options.effort!r} (one of {', '.join(EFFORTS)})")
+    if options.subagent_model is not None and not is_model(options.subagent_model):
+        raise InvalidRequest(f"invalid subagent model: {options.subagent_model!r}")
+    return options
 
 
 @dataclass(frozen=True)
@@ -81,6 +95,8 @@ def run_subprocess(args: Sequence[str], cwd: str | None, timeout: float = DEFAUL
 
 
 class ClaudeHarness:
+    names_sessions: Final = True  # `claude --bg -n NAME`; the core puts the project in front (D19)
+
     def __init__(self, claude_bin: str = "claude", runner: Runner | None = None):
         self._bin = claude_bin
         self._run: Runner = runner or run_subprocess
@@ -91,8 +107,9 @@ class ClaudeHarness:
         prompt: str,
         name: str | None = None,
         permission_mode: str | None = None,
+        options: SpawnOptions = NO_OPTIONS,
     ) -> Spawned:
-        """Start a background session in `cwd` with `prompt` as its first message."""
+        """Start a background session in `cwd` with `prompt` as its first message, on the model and effort chosen in `options`."""
         if not isinstance(cwd, (str, os.PathLike)) or not Path(cwd).is_dir():
             raise InvalidRequest(f"not a directory: {cwd!r}")
         directory = Path(cwd)
@@ -104,12 +121,16 @@ class ClaudeHarness:
             raise InvalidRequest(f"invalid session name: {name!r}")
         if permission_mode is not None and not _matches(_MODE, permission_mode):
             raise InvalidRequest(f"invalid permission mode: {permission_mode!r}")
+        options = _checked_options(options)
 
         args = [
             self._bin,
             "--bg",
             *(["-n", name] if name is not None else []),
             *(["--permission-mode", permission_mode] if permission_mode is not None else []),
+            *(["--model", options.model] if options.model is not None else []),
+            *(["--effort", options.effort] if options.effort is not None else []),
+            *(["--settings", subagent_settings(options.subagent_model)] if options.subagent_model is not None else []),
             "--",
             prompt,
         ]

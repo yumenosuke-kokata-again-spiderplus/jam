@@ -16,6 +16,28 @@ def is_id(value: object) -> bool:
     return isinstance(value, str) and ID_PATTERN.fullmatch(value) is not None
 
 
+# A model is an alias ("sonnet") or a full id. It becomes an argv entry, so it never starts with "-" (D18).
+MODEL_PATTERN: Final = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]{0,63}")
+EFFORTS: Final = ("low", "medium", "high", "xhigh", "max")
+
+
+def is_model(value: object) -> bool:
+    """True only for a string that can name a model without reading as a flag."""
+    return isinstance(value, str) and MODEL_PATTERN.fullmatch(value) is not None
+
+
+@dataclass(frozen=True)
+class SpawnOptions:
+    """What the spawning caller chose for the new session. None leaves it to the owner's settings (D18)."""
+
+    model: str | None = None
+    effort: str | None = None
+    subagent_model: str | None = None
+
+
+NO_OPTIONS: Final = SpawnOptions()
+
+
 @dataclass(frozen=True)
 class Spawned:
     id: str

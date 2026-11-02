@@ -10,7 +10,7 @@ from jam.errors import HarnessError, InvalidRequest, RegistryError, StillListed,
 from jam.harness.claude import ClaudeHarness
 from jam.registry import Record, Registry, spawned_marked
 from jam.service import Jam, Listed, Listing, SpawnResult, failure_reason, joined
-from jam.session import Session, Spawned
+from jam.session import NO_OPTIONS, Session, SpawnOptions, Spawned
 
 from test_claude_harness import LIVE, STOPPED, FakeRunner, agents, ok
 from jam.harness.claude import RunResult
@@ -23,13 +23,16 @@ def session(session_id, **fields):
 
 
 class FakeHarness:
-    def __init__(self, sessions=(), spawn_error=None, list_error=None, on_spawn=None, remove_error=None):
+    def __init__(self, sessions=(), spawn_error=None, list_error=None, on_spawn=None, remove_error=None, names_sessions=False):
         self.sessions = list(sessions)
         self.spawn_error, self.list_error, self.on_spawn, self.remove_error = spawn_error, list_error, on_spawn, remove_error
+        self.names_sessions = names_sessions
         self.spawn_calls, self.list_calls, self.stop_calls, self.remove_calls = [], [], [], []
+        self.spawn_options = []
 
-    def spawn(self, cwd, prompt, name=None, permission_mode=None):
+    def spawn(self, cwd, prompt, name=None, permission_mode=None, options=NO_OPTIONS):
         self.spawn_calls.append((cwd, prompt, name, permission_mode))
+        self.spawn_options.append(options)
         if self.on_spawn:
             self.on_spawn()
         if self.spawn_error:
@@ -125,6 +128,44 @@ class SpawnTest(ServiceTestCase):
                     self.assertEqual(caught.exception.raw, "raw output")
                 self.assertEqual(stub.updates, [])
                 self.assertFalse(self.data.exists())
+
+    def test_the_options_reach_the_harness_as_given(self):
+        harness, options = FakeHarness(), SpawnOptions(model="sonnet", effort="low", subagent_model="haiku")
+        Jam(harness, StubRegistry()).spawn("/work/x", "do it", options=options)
+        self.assertEqual(harness.spawn_options, [options])
+
+    def test_without_options_the_harness_gets_none_chosen(self):
+        harness = FakeHarness()
+        Jam(harness, StubRegistry()).spawn("/work/x", "do it")
+        self.assertEqual(harness.spawn_options, [NO_OPTIONS])
+
+    def test_a_harness_that_names_sessions_gets_the_name_with_the_project_in_front(self):
+        project = self.root / "shop"
+        (project / "src").mkdir(parents=True)
+        (project / ".git").mkdir()
+        harness = FakeHarness(names_sessions=True)
+        Jam(harness, StubRegistry()).spawn(str(project / "src"), "do it", name="fix-tests")
+        self.assertEqual(harness.spawn_calls, [(str(project / "src"), "do it", "shop-fix-tests", None)])
+
+    def test_the_claude_adapter_gets_the_prefixed_name_and_the_chosen_options(self):
+        project = self.root / "shop"
+        (project / ".git").mkdir(parents=True)
+        runner = FakeRunner(ok("backgrounded · cccc3333 · shop-fix\n"))
+        result = Jam(ClaudeHarness(claude_bin="claude", runner=runner), StubRegistry()).spawn(
+            str(project), "do it", name="fix", options=SpawnOptions(model="haiku", effort="low")
+        )
+        self.assertEqual(runner.calls[0][0], ["claude", "--bg", "-n", "shop-fix", "--model", "haiku", "--effort", "low", "--", "do it"])
+        self.assertEqual(result.spawned.name, "shop-fix")
+
+    def test_a_harness_that_names_sessions_gets_no_name_when_none_was_given(self):
+        harness = FakeHarness(names_sessions=True)
+        Jam(harness, StubRegistry()).spawn(str(self.root), "do it")
+        self.assertEqual(harness.spawn_calls, [(str(self.root), "do it", None, None)])
+
+    def test_a_harness_that_does_not_name_sessions_gets_the_name_as_given(self):
+        harness = FakeHarness(names_sessions=False)
+        Jam(harness, StubRegistry()).spawn(str(self.root), "do it", name="fix-tests")
+        self.assertEqual(harness.spawn_calls, [(str(self.root), "do it", "fix-tests", None)])
 
     def test_the_registry_is_usable_while_the_harness_spawns(self):
         outcome = []

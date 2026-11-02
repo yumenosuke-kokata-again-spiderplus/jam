@@ -11,7 +11,9 @@ repos instead of switching contexts by hand.
 
 ## What it does
 
-- **Spawn** a background session in any directory.
+- **Spawn** a background session in any directory, on the model and effort the
+  task calls for (D18), with the project's name in front of the session's name
+  (D19).
 - **List** live sessions with their IDs, working directories, and state.
 - **Stop** a session when it has nothing left to do, or **close** it, which also
   deletes it, when the owner asks for that (D17).

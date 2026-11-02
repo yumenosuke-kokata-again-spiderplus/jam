@@ -21,6 +21,7 @@ from jam.harness.claude import RunResult
 from jam.harness.devin import DevinHarness
 from jam.registry import Registry
 from jam.service import Jam
+from jam.session import SpawnOptions
 
 from test_claude_harness import FakeRunner, ok
 
@@ -128,6 +129,31 @@ class SpawnTest(Case):
         harness, _ = self.harness()
         with self.assertRaises(InvalidRequest):
             harness.spawn(self.dir, "do the work", name="worker-a")
+
+    def test_it_does_not_name_sessions(self):
+        self.assertIs(DevinHarness.names_sessions, False)
+
+    def test_a_chosen_model_is_passed_as_devin_model(self):
+        harness, spawner = self.harness(ok(json.dumps(ROWS_V1)), ok(json.dumps(ROWS_V2)), ok(json.dumps(ROWS_V2)))
+        harness.spawn(self.dir, "do the work", options=SpawnOptions(model="claude-opus-4.6"))
+        self.assertEqual(spawner.calls[0][0], ["devin", "--model", "claude-opus-4.6", "-p", "do the work"])
+
+    def test_effort_and_a_subagent_model_are_refused_because_devin_has_neither(self):
+        for options, word in ((SpawnOptions(effort="low"), "effort"), (SpawnOptions(subagent_model="haiku"), "subagent model")):
+            with self.subTest(options=options):
+                harness, spawner = self.harness()
+                with self.assertRaises(InvalidRequest) as caught:
+                    harness.spawn(self.dir, "do the work", options=options)
+                self.assertIn(word, str(caught.exception))
+                self.assertEqual(spawner.calls, [])
+
+    def test_a_model_that_could_read_as_a_flag_is_refused(self):
+        for model in ("-x", "--print", "has space", "", 5):
+            with self.subTest(model=model):
+                harness, spawner = self.harness()
+                with self.assertRaises(InvalidRequest):
+                    harness.spawn(self.dir, "do the work", options=SpawnOptions(model=model))
+                self.assertEqual(spawner.calls, [])
 
     def test_spawn_validates_its_arguments(self):
         harness, _ = self.harness()

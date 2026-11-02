@@ -17,6 +17,7 @@ from jam.errors import (
     WorkspaceNotTrusted,
 )
 from jam.harness.claude import ClaudeHarness, RunResult, run_subprocess
+from jam.session import SpawnOptions
 
 LIVE = {
     "pid": 4242,
@@ -90,6 +91,36 @@ class SpawnTest(unittest.TestCase):
         )
         self.assertEqual(cwd, str(self.dir))
 
+    def test_the_chosen_model_effort_and_subagent_model_go_before_the_prompt(self):
+        harness, runner = self.harness(ok(SPAWN_STDOUT))
+        harness.spawn(self.dir, "do it", name="worker-c", options=SpawnOptions(model="claude-sonnet-4.5", effort="xhigh", subagent_model="haiku"))
+        args = runner.calls[0][0]
+        self.assertEqual(
+            args,
+            [
+                "claude", "--bg", "-n", "worker-c",
+                "--model", "claude-sonnet-4.5", "--effort", "xhigh",
+                "--settings", '{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "haiku"}}',
+                "--", "do it",
+            ],
+        )
+        self.assertEqual(json.loads(args[args.index("--settings") + 1]), {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "haiku"}})
+
+    def test_each_option_is_passed_on_its_own(self):
+        cases = [
+            (SpawnOptions(model="opus"), ["--model", "opus"]),
+            (SpawnOptions(effort="max"), ["--effort", "max"]),
+            (SpawnOptions(subagent_model="sonnet"), ["--settings", '{"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"}}']),
+        ]
+        for options, flags in cases:
+            with self.subTest(options=options):
+                harness, runner = self.harness(ok(SPAWN_STDOUT))
+                harness.spawn(self.dir, "x", options=options)
+                self.assertEqual(runner.calls[0][0], ["claude", "--bg", *flags, "--", "x"])
+
+    def test_it_names_sessions(self):
+        self.assertIs(ClaudeHarness.names_sessions, True)
+
     def test_omits_optional_flags_and_keeps_a_leading_dash_prompt_safe(self):
         harness, runner = self.harness(ok(SPAWN_STDOUT))
         harness.spawn(self.dir, "-looks like a flag")
@@ -155,7 +186,20 @@ class SpawnTest(unittest.TestCase):
             dict(cwd=self.dir, prompt="x", name="has space"),
             dict(cwd=self.dir, prompt="x", name="n" * 65),
             dict(cwd=self.dir, prompt="x", permission_mode="--bad"),
+            # A model must never read as a flag, and effort is one of the levels the harness knows.
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(model="-x")),
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(model="--settings")),
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(model="has space")),
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(model="m" * 65)),
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(model="")),
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(effort="huge")),
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(effort="LOW")),
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(subagent_model="-x")),
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(subagent_model='a"b')),
             # Wrong types must be the same error, not a TypeError from the regex or Path.
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(model=5)),
+            dict(cwd=self.dir, prompt="x", options=SpawnOptions(effort=["low"])),
+            dict(cwd=self.dir, prompt="x", options="sonnet"),
             dict(cwd=self.dir, prompt="x", name=123),
             dict(cwd=self.dir, prompt="x", permission_mode=123),
             dict(cwd=123, prompt="x"),
