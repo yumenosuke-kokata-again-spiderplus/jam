@@ -318,8 +318,17 @@ class SubprocessRunnerTest(unittest.TestCase):
         self.assertNotIn(sentinel, str(caught.exception))
 
     def test_missing_binary_becomes_a_harness_error(self):
-        with self.assertRaises(HarnessError):
+        with self.assertRaises(HarnessError) as caught:
             run_subprocess(["jam-test-no-such-binary"], None)
+        self.assertIn("executable not found", str(caught.exception))
+
+    def test_a_missing_directory_is_reported_as_the_directory_not_the_executable(self):
+        gone = tempfile.mkdtemp()
+        os.rmdir(gone)
+        with self.assertRaises(HarnessError) as caught:
+            run_subprocess([sys.executable, "-c", "pass"], gone)
+        self.assertIn("working directory not found", str(caught.exception))
+        self.assertNotIn("executable", str(caught.exception))
 
     def test_runs_in_the_requested_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
