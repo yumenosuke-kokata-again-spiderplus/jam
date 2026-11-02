@@ -50,7 +50,7 @@ def prefixed(name: Optional[str], label: Optional[str]) -> Optional[str]:
     never cut: the label is shortened to fit the length limit, and left off when
     none of it fits.
     """
-    if name is None or label is None or ID_PATTERN.fullmatch(name) is None:
+    if not isinstance(name, str) or label is None or ID_PATTERN.fullmatch(name) is None:
         return name
     folded = name.casefold()
     if folded == label.casefold() or folded.startswith(f"{label}{SEPARATOR}".casefold()):

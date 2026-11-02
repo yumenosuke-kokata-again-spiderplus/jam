@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import unittest
 
+import support  # noqa: F401  (puts src/ on sys.path)
+from jam.operations import lookup
 from test_skill import parts
 from test_spawn_docs import DECISIONS, README, flat, section
 
@@ -34,10 +36,17 @@ class ReadmeAndSkillTest(unittest.TestCase):
     def test_the_readme_says_spawn_takes_the_model_and_names_the_project(self):
         self.assertIn("on the model and effort the task calls for (D18), with the project's name in front of the session's name (D19)", flat(README))
 
+    def test_the_spawn_description_asks_for_a_name_and_to_address_the_session_by_the_returned_one(self):
+        # D19 says the description asks for a name; a caller that never loads the skill reads only this.
+        self.assertIn(
+            "Give a short `name` for the task; the returned `name` has the project in front, so address the session by it.",
+            lookup("spawn").description,
+        )
+
     def test_the_skill_gives_the_generic_rule_for_choosing_and_asks_for_a_name(self):
         text = flat(parts()[1])
         for phrase in (
-            "Give a short `name` for the task (jam puts the project in front)",
+            "Give a short `name` for the task (jam puts the project in front, so address the session by the `name` that `spawn` returns)",
             "a stronger model for design and hard debugging, a cheaper one for docs and mechanical edits",
             "a small `subagent_model` for a session that will fan work out to many subagents",
         ):

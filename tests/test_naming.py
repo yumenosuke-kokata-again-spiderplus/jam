@@ -77,7 +77,7 @@ class PrefixedTest(unittest.TestCase):
         self.assertEqual(naming.prefixed("fix-tests", None), "fix-tests")
 
     def test_an_invalid_name_is_left_for_the_harness_to_refuse(self):
-        for name in ("-flag", "has space", "n" * 65, ""):
+        for name in ("-flag", "has space", "n" * 65, "", 123, b"fix", ["fix"]):
             with self.subTest(name=name):
                 self.assertEqual(naming.prefixed(name, "shop"), name)
 

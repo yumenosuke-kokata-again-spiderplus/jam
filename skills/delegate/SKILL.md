@@ -32,8 +32,9 @@ do that only when a direct edit is really intended.
    the work, message it instead.
 3. The first line of `ListAgents` names this session as other sessions address
    it, with its `[ref]`. Put both in the brief.
-4. Give a short `name` for the task (jam puts the project in front), and pick
-   `model` and `effort` for it: a stronger model for design and hard debugging,
+4. Give a short `name` for the task (jam puts the project in front, so address
+   the session by the `name` that `spawn` returns), and pick `model` and
+   `effort` for it: a stronger model for design and hard debugging,
    a cheaper one for docs and mechanical edits, and a small `subagent_model`
    for a session that will fan work out to many subagents.
 
