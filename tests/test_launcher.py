@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = ROOT / "scripts" / "jam"
 SESSION_ID = "aaaa1111-0000-4000-8000-000000000001"
 
+# Like the real one (Claude Code 2.1.295), it refuses to run in a working directory that was deleted.
 FAKE_CLAUDE = """#!/bin/sh
+/bin/pwd -P >/dev/null 2>&1 || { echo "error: The current working directory was deleted, so that command didn't work." >&2; exit 1; }
 case "$1" in
   agents)
     printf '%s\\n' '[{"id":"aaaa1111","sessionId":"aaaa1111-0000-4000-8000-000000000001","name":"worker-a","cwd":"/work/repo-a","kind":"background","state":"working","status":"busy","pid":4242,"startedAt":1700000000000}]'
@@ -99,14 +101,14 @@ class LauncherTestCase(unittest.TestCase):
         proc.err = proc.stderr.decode("utf-8", errors="replace")
         return proc
 
-    def server(self):
+    def server(self, cwd=None):
         """A running `jam mcp` with all three pipes open. It is killed at cleanup if a test leaves it running."""
         proc = subprocess.Popen(
             [sys.executable, "-I", str(LAUNCHER), "mcp"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=str(self.root),
+            cwd=str(cwd or self.root),
             env=self.env(),
             preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),  # a backgrounded parent may have ignored it
         )
@@ -195,6 +197,17 @@ class ServerTest(LauncherTestCase):
         proc.stdin.close()
         self.assertEqual(proc.wait(timeout=15), 0)
         self.assertEqual(proc.stderr.read(), b"")
+
+    def test_it_still_lists_after_the_directory_it_started_in_is_deleted(self):
+        started_in = self.root / "worktree"
+        started_in.mkdir()
+        proc = self.server(cwd=started_in)
+        self.assertEqual(self.reply_from(proc)["id"], 1)  # running before the directory goes
+        started_in.rmdir()
+        call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list", "arguments": {}}}
+        result = self.reply_from(proc, json.dumps(call).encode("ascii") + b"\n")["result"]
+        self.assertFalse(result["isError"], result["content"][0]["text"])
+        self.assertEqual([row["id"] for row in json.loads(result["content"][0]["text"])["sessions"]], ["aaaa1111"])
 
     def test_invalid_utf8_is_a_parse_error_and_the_server_goes_on(self):
         invalid = b'{"jsonrpc":"2.0","id":1,"method":"ping","x":"\xff"}\n'

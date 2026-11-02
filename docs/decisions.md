@@ -372,6 +372,16 @@ pass).
   argparse prints into memory and the CLI then writes through the same guarded
   path: help still exits 0 and a usage error still exits 2, with no traceback and
   no text left in a buffer for the exit-time flush to fail on.
+- **A deleted working directory.** The entry points never depend on the
+  directory they started in. A harness command that needs no directory (`claude
+  agents`, `stop`, `rm`; `devin rm`; the `ps` probe) runs in the filesystem root,
+  and only `spawn` and a Devin listing by `cwd` run in a directory, the one the
+  caller named. A child otherwise inherits the server's directory, which a
+  worktree cleanup can delete under a running MCP server (#34). Checked on
+  2026-11-02 from a process whose directory was deleted: `claude agents --json`
+  (Claude Code 2.1.295) exited 1 with "The current working directory was
+  deleted", `devin list` (3000.11.92) exited 1 with "No such file or directory",
+  and both succeeded with the root as their directory.
 - **Argument checks.** A string that cannot be passed on, such as an unpaired
   surrogate (JSON can carry one; a command line cannot), is an invalid request,
   checked with `os.fsencode`. A usage error shows the failing command's own usage

@@ -27,6 +27,10 @@ from ..session import EFFORTS, NO_OPTIONS, Session, SpawnOptions, Spawned, is_mo
 from .claude_env import subagent_settings
 
 DEFAULT_TIMEOUT: Final = 60.0
+# Where a command that needs no directory runs. A child otherwise inherits this process's
+# directory, and `claude` and `devin` both refuse to run once that was deleted (a worktree
+# cleaned up under a running MCP server); the root always exists (D12).
+NEUTRAL_DIR: Final = "/"
 
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SPAWNED: Final = re.compile(r"^backgrounded\s*·\s*([0-9a-f]{8})(?:\s*·\s*(\S.*?))?\s*$", re.MULTILINE)
@@ -72,14 +76,14 @@ Runner = Callable[[list[str], Optional[str]], RunResult]
 
 
 def run_subprocess(args: Sequence[str], cwd: str | None, timeout: float = DEFAULT_TIMEOUT) -> RunResult:
-    """Run a command with stdin closed and a timeout, without a shell.
+    """Run a command with stdin closed and a timeout, without a shell, in `cwd` or else the root.
 
     Arguments (a prompt, for one) are never echoed into error messages.
     """
     try:
         proc = subprocess.run(
             list(args),
-            cwd=cwd,
+            cwd=NEUTRAL_DIR if cwd is None else cwd,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -88,10 +92,16 @@ def run_subprocess(args: Sequence[str], cwd: str | None, timeout: float = DEFAUL
         )
     except subprocess.TimeoutExpired as exc:
         raise HarnessError(f"{args[0]!r} timed out after {timeout:g}s") from exc
-    except OSError as exc:  # not found, not executable, or a directory on PATH is unreadable
-        reason = "executable not found" if isinstance(exc, FileNotFoundError) else (exc.strerror or "OS error")
-        raise HarnessError(f"cannot run {args[0]!r}: {reason}") from exc
+    except OSError as exc:  # not found, not executable, a directory on PATH is unreadable, or `cwd` is unusable
+        raise HarnessError(f"cannot run {args[0]!r}: {_launch_failure(exc, cwd)}") from exc
     return RunResult(proc.returncode, proc.stdout, proc.stderr)
+
+
+def _launch_failure(exc: OSError, cwd: str | None) -> str:
+    """Why a command did not start; the child names `cwd` as the failing file when changing into it failed."""
+    if cwd is not None and exc.filename == cwd:
+        return "working directory not found" if isinstance(exc, FileNotFoundError) else f"working directory unusable: {exc.strerror or 'OS error'}"
+    return "executable not found" if isinstance(exc, FileNotFoundError) else (exc.strerror or "OS error")
 
 
 class ClaudeHarness:

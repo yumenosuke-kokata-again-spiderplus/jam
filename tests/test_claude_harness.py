@@ -3,6 +3,7 @@
 output shapes observed from Claude Code 2.1.300, with generic ids and paths."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -361,13 +362,31 @@ class SubprocessRunnerTest(unittest.TestCase):
         self.assertNotIn(sentinel, str(caught.exception))
 
     def test_missing_binary_becomes_a_harness_error(self):
-        with self.assertRaises(HarnessError):
+        with self.assertRaises(HarnessError) as caught:
             run_subprocess(["jam-test-no-such-binary"], None)
+        self.assertIn("executable not found", str(caught.exception))
+
+    def test_a_missing_directory_is_reported_as_the_directory_not_the_executable(self):
+        gone = tempfile.mkdtemp()
+        os.rmdir(gone)
+        with self.assertRaises(HarnessError) as caught:
+            run_subprocess([sys.executable, "-c", "pass"], gone)
+        self.assertIn("working directory not found", str(caught.exception))
+        self.assertNotIn("executable", str(caught.exception))
 
     def test_runs_in_the_requested_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = run_subprocess([sys.executable, "-c", "import os; print(os.getcwd())"], tmp)
             self.assertEqual(Path(result.stdout.strip()).resolve(), Path(tmp).resolve())
+
+    def test_a_command_given_no_directory_runs_in_the_root_even_when_ours_was_deleted(self):
+        # `claude` and `devin` both refuse to run in a deleted directory, and a child inherits ours.
+        self.addCleanup(os.chdir, os.getcwd())
+        gone = tempfile.mkdtemp()
+        os.chdir(gone)
+        os.rmdir(gone)
+        result = run_subprocess([sys.executable, "-I", "-c", "import os; print(os.getcwd())"], None)
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "/"), result.stderr)
 
 
 if __name__ == "__main__":
