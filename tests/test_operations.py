@@ -15,13 +15,13 @@ import unittest
 from pathlib import Path
 
 import support  # noqa: F401  (puts src/ on sys.path)
-from jam.errors import HarnessError, InvalidRequest, RegistryError, UnparseableOutput, WorkspaceNotTrusted
+from jam.errors import DiscardRequired, HarnessError, InvalidRequest, RegistryError, UnparseableOutput, WorkspaceNotTrusted
 from jam.harness.claude import ClaudeHarness
 from jam.registry import Registry, spawned_marked
 from jam.service import Jam
 from jam.session import SpawnOptions
 
-from test_claude_harness import FakeRunner
+from test_claude_harness import DISCARD, FakeRunner
 from test_service import FakeHarness, StubRegistry, session
 
 SESSION_ID = "aaaa1111-0000-4000-8000-000000000001"
@@ -45,6 +45,11 @@ operations = lazy("jam.operations")
 
 def identity(session_id=SESSION_ID, short="aaaa1111"):
     return lazy("jam.session").Identity(session_id, short)
+
+
+def elsewhere():
+    """A caller other than the session these tests close, which `close` would refuse as the caller's own."""
+    return identity("cccc3333-0000-4000-8000-000000000003", "cccc3333")
 
 
 def runtime_for(harness=None, registry=None, whoami=None):
@@ -103,6 +108,8 @@ REJECTED = [
     ("stop", {"id": 5}, "id"),
     ("close", {}, "id"),
     ("close", {"id": 5}, "id"),
+    ("close", {"id": "aaaa1111", "discard_unpushed": True}, "discard_unpushed"),
+    ("close", {"id": "aaaa1111", "force_remove_worktree": "x"}, "force_remove_worktree"),
     ("whoami", {"anything": 1}, "anything"),
     # An unknown key is unknown whatever it holds: a null must not slip past the closed schema.
     ("spawn", {"cwd": "/work/x", "prompt": "p", "bogus": None}, "bogus"),
@@ -140,7 +147,7 @@ class RegistryPinTest(unittest.TestCase):
             "spawn": ({"cwd", "prompt", "name", "model", "effort", "subagent_model"}, {"cwd", "prompt"}),
             "list": ({"include_exited", "cwd"}, set()),
             "stop": ({"id"}, {"id"}),
-            "close": ({"id"}, {"id"}),
+            "close": ({"id", "discard_unpushed"}, {"id"}),
             "whoami": (set(), set()),
         }
         for op in operations.OPERATIONS:
@@ -355,7 +362,7 @@ class ListOperationTest(unittest.TestCase):
 class CloseOperationTest(unittest.TestCase):
     def test_close_reports_the_id_and_never_touches_the_registry(self):
         harness, stub = FakeHarness([session("aaaa1111")]), StubRegistry()
-        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness, registry=stub)
+        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness, registry=stub, whoami=elsewhere)
         self.assertTrue(outcome.ok)
         self.assertEqual(payload(outcome), {"id": "aaaa1111", "closed": True})
         self.assertEqual((harness.stop_calls, harness.remove_calls), (["aaaa1111"], ["aaaa1111"]))
@@ -363,28 +370,59 @@ class CloseOperationTest(unittest.TestCase):
 
     def test_a_session_that_stopping_already_deleted_is_closed_without_a_removal(self):
         harness = VanishingHarness()
-        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness)
+        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness, whoami=elsewhere)
         self.assertEqual(payload(outcome), {"id": "aaaa1111", "closed": True})
         self.assertEqual((harness.stop_calls, harness.remove_calls), (["aaaa1111"], []))
 
     def test_a_failed_stop_is_a_failure_and_nothing_is_removed(self):
         harness = FailingStopHarness()
-        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness)
+        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness, whoami=elsewhere)
         self.assertEqual((outcome.ok, outcome.text), (False, "stop failed"))
         self.assertEqual(harness.remove_calls, [])
 
     def test_a_refusal_is_a_failure_that_keeps_the_harness_text_and_says_what_was_done(self):
         harness = FakeHarness([session("aaaa1111")], remove_error=HarnessError("removing aaaa1111 failed (exit 1): unpushed commits"))
-        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness)
+        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness, whoami=elsewhere)
         self.assertFalse(outcome.ok)
         self.assertEqual(outcome.text, "the session was stopped, but removing it failed: removing aaaa1111 failed (exit 1): unpushed commits")
 
     def test_a_very_long_refusal_is_clipped_after_the_note_that_the_session_was_stopped(self):
         harness = FakeHarness([session("aaaa1111")], remove_error=HarnessError("x" * 5000))
-        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness)
+        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness, whoami=elsewhere)
         self.assertFalse(outcome.ok)
         self.assertTrue(outcome.text.startswith("the session was stopped, but removing it failed: x"))
         self.assertLessEqual(len(outcome.text), 2000)
+
+    def test_the_callers_own_session_is_refused_and_nothing_runs(self):
+        harness = FakeHarness([session("aaaa1111")])
+        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness)
+        self.assertFalse(outcome.ok)
+        self.assertIn("own session", outcome.text)
+        self.assertEqual((harness.stop_calls, harness.remove_calls), ([], []))
+
+    def test_a_caller_the_harness_cannot_name_is_no_session_so_the_close_goes_ahead(self):
+        # whoami cannot answer on the Devin CLI or from a plain shell; then no listed session is the caller's own.
+        harness = FakeHarness([session("aaaa1111")])
+        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness, whoami=raising(HarnessError("no session id")))
+        self.assertTrue(outcome.ok, outcome.text)
+        self.assertEqual(harness.remove_calls, ["aaaa1111"])
+
+    def test_a_discard_value_reaches_the_harness(self):
+        harness = FakeHarness([session("aaaa1111")])
+        outcome = run_operation("close", {"id": "aaaa1111", "discard_unpushed": DISCARD}, harness=harness, whoami=elsewhere)
+        self.assertTrue(outcome.ok, outcome.text)
+        self.assertEqual(harness.discards, [DISCARD])
+
+    def test_a_refusal_that_offers_a_discard_value_ends_with_it_and_when_to_pass_it_even_when_clipped(self):
+        harness = FakeHarness([session("aaaa1111")], remove_error=DiscardRequired("x" * 5000, DISCARD))
+        outcome = run_operation("close", {"id": "aaaa1111"}, harness=harness, whoami=elsewhere)
+        self.assertFalse(outcome.ok)
+        self.assertTrue(outcome.text.startswith("the session was stopped, but removing it failed: x"))
+        self.assertLessEqual(len(outcome.text), 2000)
+        tail = outcome.text[outcome.text.index(" | "):]
+        for phrase in (f"discard_unpushed {DISCARD}", "--discard-unpushed", "merged", "the owner"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, tail)
 
 
 class StopAndWhoamiTest(unittest.TestCase):

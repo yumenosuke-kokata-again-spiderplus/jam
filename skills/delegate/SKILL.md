@@ -51,20 +51,20 @@ and what is left open."
   when the session finishes its turn, call `SendMessage` with its name,
   `notify_when_idle: true` and a one-line message such as "No reply needed."
   (the session receives it; an empty `message` is refused), then carry on or
-  end your turn.
-- To reply to a `<cross-session-message from="...">`, copy its `from` as your
-  `to`.
+  end your turn. An idle notice from a session whose report you already
+  received and checked needs no action.
+- To reply to a `<cross-session-message>`, use its `from-name` as your `to`
+  when it has one, else its `from`: a socket path in `from` goes stale.
 
 ## On the Devin CLI
 
 Messaging is `devin -r <id> -p "<message>"`, run through `exec` in the
-session's own directory: it resumes the session, sends the message, and the
-command's output IS the peer's reply — send and result are fused, so the call
-blocks until the peer answers and there is no idle wake or `notify_when_idle`
-to wait on. A reply the peer owes you comes back the same way, from its side.
-`whoami` cannot answer on Devin — no session id reaches a session's own
-environment — so identify your row in `list` by `cwd` instead, and address
-peers by the `id` `list` shows.
+session's own directory: it resumes the session, and the command's output IS
+the peer's reply, so the call blocks until the peer answers and there is no
+`notify_when_idle` to wait on; a reply the peer owes you comes the same way,
+from its side. `whoami` cannot answer on Devin (no session id reaches a
+session's environment), so find your row in `list` by `cwd`, and address peers
+by the `id` `list` shows.
 
 ## Peers, not orders
 
@@ -94,8 +94,11 @@ brief gives, adding the ref only when the name alone is ambiguous.
 ## Finish
 
 `stop` a session you started, or one the owner asked you to stop, once nothing
-is left for it, never your own (`whoami` tells you who you are). When the owner
-asks you to close or remove a session, use `close`: it stops the session and
-deletes it. A refusal (unpushed commits, uncommitted changes)
-goes back to the owner: jam never forces a delete, and you do not work around
-it.
+is left for it, never your own (`whoami` tells you who you are). `close` stops a
+session and deletes it: use it when the owner asks you to close or remove one,
+or told you to close the sessions you start once their work is done. jam
+refuses to close your own. A refusal over an unpushed commit ends with a
+`discard_unpushed` value: pass it to `close` only when that commit is the head
+of a merged pull request (`gh pr list --state merged --search <sha> --json
+headRefOid`), else take the refusal to the owner. jam never forces any other
+refusal, and you do not work around it.

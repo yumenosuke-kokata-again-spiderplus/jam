@@ -17,7 +17,7 @@ from jam.harness.claude import RunResult
 from jam.session import Session
 
 from test_claude_harness import LIVE, FakeRunner, agents
-from test_operations import SESSION_ID, FailingStopHarness, identity, lazy, operations, raising, runtime_for
+from test_operations import SESSION_ID, FailingStopHarness, elsewhere, identity, lazy, operations, raising, runtime_for
 from test_service import FakeHarness, session
 
 mcp = lazy("jam.mcp")
@@ -147,10 +147,13 @@ class ToolsListTest(unittest.TestCase):
             "close": [
                 "stop it, then delete it",
                 "only when the owner asked you to close or remove it",
-                "never for your own session",
+                "or told you to close the sessions you start once their work is done",
+                "your own session is refused",
                 "the harness decides what it refuses",
                 "unpushed commits",
-                "jam never forces it",
+                "jam never forces a refusal",
+                "`discard_unpushed`",
+                "only when that commit is the head of a merged pull request or the owner said to drop it",
                 "the session was stopped, but removing it failed",
             ],
             "whoami": [
@@ -182,11 +185,12 @@ class ToolCallTest(unittest.TestCase):
         runtime = runtime_for(harness)
         self.assertEqual(json.loads(tool_result(answer(tool_call("spawn", {"cwd": "/work/x", "prompt": "do it", "name": "worker-c"}), runtime))[1])["id"], "cccc3333")
         self.assertEqual(json.loads(tool_result(answer(tool_call("stop", {"id": "aaaa1111"}), runtime))[1])["id"], "aaaa1111")
-        self.assertEqual(json.loads(tool_result(answer(tool_call("close", {"id": "aaaa1111"}), runtime))[1]), {"id": "aaaa1111", "closed": True})
+        # Not the caller's own session (`aaaa1111`, as whoami says), which close refuses.
+        self.assertEqual(json.loads(tool_result(answer(tool_call("close", {"id": "bbbb2222"}), runtime))[1]), {"id": "bbbb2222", "closed": True})
         self.assertEqual(json.loads(tool_result(answer(tool_call("whoami", {}), runtime))[1]), {"session_id": SESSION_ID, "id": "aaaa1111"})
         self.assertEqual(harness.spawn_calls, [("/work/x", "do it", "worker-c", None)])
-        self.assertEqual(harness.stop_calls, ["aaaa1111", "aaaa1111"])  # one for `stop`, one inside `close`
-        self.assertEqual(harness.remove_calls, ["aaaa1111"])
+        self.assertEqual(harness.stop_calls, ["aaaa1111", "bbbb2222"])  # one for `stop`, one inside `close`
+        self.assertEqual(harness.remove_calls, ["bbbb2222"])
 
     def test_arguments_may_be_left_out(self):
         for name in ("list", "whoami"):
@@ -200,7 +204,8 @@ class ToolCallTest(unittest.TestCase):
             ("permission_mode", tool_call("spawn", {"cwd": "/work/x", "prompt": "p", "permission_mode": "default"}), runtime_for(), "unknown argument"),
             ("a missing key", tool_call("stop", {}), runtime_for(), "id"),
             ("a stop failure", tool_call("stop", {"id": "aaaa1111"}), runtime_for(FailingStopHarness()), "stop failed"),
-            ("a close whose stop fails", tool_call("close", {"id": "aaaa1111"}), runtime_for(FailingStopHarness()), "stop failed"),
+            ("a close whose stop fails", tool_call("close", {"id": "aaaa1111"}), runtime_for(FailingStopHarness(), whoami=elsewhere), "stop failed"),
+            ("a close of the caller's own session", tool_call("close", {"id": "aaaa1111"}), runtime_for(), "own session"),
             ("no identity", tool_call("whoami"), runtime_for(whoami=raising(HarnessError("not set"))), "not set"),
             ("a broken factory", tool_call("list"), mcp_runtime_with_broken_factory(), "internal error: RuntimeError"),
         ]

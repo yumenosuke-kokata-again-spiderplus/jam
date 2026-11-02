@@ -292,6 +292,13 @@ class CloseTest(Case):
             self.jam(runner).close("alpha-fjord")
         self.assertEqual([call[0] for call in runner.calls], [["devin", "rm", "alpha-fjord"]] * 2)
 
+    def test_a_discard_value_is_refused_before_the_stop_because_devin_keeps_no_worktree_to_discard(self):
+        make_db(self.db, [DB_ROWS[0]])
+        runner = FakeRunner()
+        with self.assertRaisesRegex(InvalidRequest, "pass no discard_unpushed"):
+            self.jam(runner).close("alpha-fjord", "1f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c@0123456789abcdef0123456789abcdef")
+        self.assertEqual(runner.calls, [])
+
 
 class RemoveTest(Case):
     def test_remove_calls_devin_rm_and_checks_the_store(self):
@@ -300,6 +307,14 @@ class RemoveTest(Case):
         harness = DevinHarness(runner=runner, db_path=str(self.db))
         harness.remove("bravo-mesa")
         self.assertEqual(runner.calls[0][0], ["devin", "rm", "bravo-mesa"])
+
+    def test_it_takes_no_discard_value_and_refuses_one_before_anything_runs(self):
+        runner = FakeRunner()
+        harness = DevinHarness(runner=runner, db_path=str(self.db))
+        self.assertIs(harness.discards_unpushed, False)
+        with self.assertRaisesRegex(InvalidRequest, "pass no discard_unpushed"):
+            harness.remove("bravo-mesa", "1f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c@0123456789abcdef0123456789abcdef")
+        self.assertEqual(runner.calls, [])
 
     def test_a_record_that_survives_removal_is_still_listed(self):
         make_db(self.db, [DB_ROWS[0]])

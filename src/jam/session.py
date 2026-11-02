@@ -37,6 +37,16 @@ class SpawnOptions:
 
 NO_OPTIONS: Final = SpawnOptions()
 
+# The value a removal refusal names to delete work that exists nowhere else: a commit and the worktree's id (D17).
+# It goes back as an argv entry, so it starts with a hexadecimal digit and holds no space.
+DISCARD_PATTERN: Final = re.compile(r"[0-9a-f]{40,64}@[A-Za-z0-9_-]{1,64}")
+NO_DISCARD: Final = "this harness keeps no unpushed work to discard; pass no discard_unpushed"
+
+
+def is_discard_value(value: object) -> bool:
+    """True only for a string in the form a refusal over unpushed commits names."""
+    return isinstance(value, str) and DISCARD_PATTERN.fullmatch(value) is not None
+
 
 @dataclass(frozen=True)
 class Spawned:

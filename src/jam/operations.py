@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Optional
 
-from .errors import InvalidRequest
+from .errors import HarnessError, InvalidRequest
 from .reporting import Closed, Stopped, failure_text, rendered
 from .service import Jam
 from .session import Identity, SpawnOptions
@@ -64,8 +64,16 @@ def _stop(runtime: Runtime, args: Mapping[str, Any]) -> object:
     return Stopped(args["id"], runtime.jam().stop(args["id"]))
 
 
+def _caller(runtime: Runtime) -> Optional[Identity]:
+    """Who is calling, or None where the harness cannot say (the Devin CLI, a plain shell): then no session is the caller's own."""
+    try:
+        return runtime.whoami()
+    except HarnessError:
+        return None
+
+
 def _close(runtime: Runtime, args: Mapping[str, Any]) -> object:
-    runtime.jam().close(args["id"])
+    runtime.jam().close(args["id"], args.get("discard_unpushed"), _caller(runtime))
     return Closed(args["id"])
 
 
@@ -135,13 +143,22 @@ OPERATIONS: Final = (
         "stop a background session and delete it",
         "Close a background session by its short `id`: stop it, then delete it, so it leaves `list` "
         "even with include_exited true. Use it only when the owner asked you to close or "
-        "remove it, never on your own initiative and never for your own session (`whoami` tells you who "
-        "you are); to end a session you started once nothing is left for it, `stop` it. Deleting is "
-        "permanent, and the harness decides what it refuses, for instance a worktree with unpushed "
-        "commits or uncommitted changes: jam never forces it, so on a refusal tell the owner what the "
-        "message says instead of working around it. A failure that starts with \"the session was stopped, "
+        "remove it, or told you to close the sessions you start once their work is done, never on your "
+        "own initiative; your own session is refused. To end a session you started once nothing is left "
+        "for it, `stop` it. Deleting is permanent, and the harness decides what it refuses, for instance a "
+        "worktree with unpushed commits or uncommitted changes, and jam never forces a refusal. A refusal over "
+        "unpushed commits ends with the `discard_unpushed` value that deletes them anyway: pass it only when "
+        "that commit is the head of a merged pull request or the owner said to drop it; tell the owner about "
+        "any other refusal instead of working around it. A failure that starts with \"the session was stopped, "
         "but removing it failed\" means it may still be listed as stopped: check `list` with include_exited true.",
-        (Param("id", "string", "The short session id, as `list` shows it.", required=True, positional=True),),
+        (
+            Param("id", "string", "The short session id, as `list` shows it.", required=True, positional=True),
+            Param(
+                "discard_unpushed",
+                "string",
+                "Only the value a refusal of this close named. It deletes the unpushed commits with the worktree.",
+            ),
+        ),
         _close,
     ),
     Operation(

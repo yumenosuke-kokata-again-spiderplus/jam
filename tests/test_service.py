@@ -6,13 +6,13 @@ import unittest
 from pathlib import Path
 
 import support  # noqa: F401  (puts src/ on sys.path)
-from jam.errors import HarnessError, InvalidRequest, RegistryError, StillListed, UnparseableOutput, WorkspaceNotTrusted
+from jam.errors import DiscardRequired, HarnessError, InvalidRequest, RegistryError, StillListed, UnparseableOutput, WorkspaceNotTrusted
 from jam.harness.claude import ClaudeHarness
 from jam.registry import Record, Registry, spawned_marked
 from jam.service import Jam, Listed, Listing, SpawnResult, failure_reason, joined
-from jam.session import NO_OPTIONS, Session, SpawnOptions, Spawned
+from jam.session import NO_OPTIONS, Identity, Session, SpawnOptions, Spawned
 
-from test_claude_harness import LIVE, STOPPED, FakeRunner, agents, ok
+from test_claude_harness import DISCARD, LIVE, LOCKED, STOPPED, UNPUSHED, FakeRunner, agents, ok
 from jam.harness.claude import RunResult
 
 SPAWNED = Spawned(id="cccc3333", name="worker-c")
@@ -23,12 +23,12 @@ def session(session_id, **fields):
 
 
 class FakeHarness:
-    def __init__(self, sessions=(), spawn_error=None, list_error=None, on_spawn=None, remove_error=None, names_sessions=False):
+    def __init__(self, sessions=(), spawn_error=None, list_error=None, on_spawn=None, remove_error=None, names_sessions=False, discards_unpushed=True):
         self.sessions = list(sessions)
         self.spawn_error, self.list_error, self.on_spawn, self.remove_error = spawn_error, list_error, on_spawn, remove_error
-        self.names_sessions = names_sessions
+        self.names_sessions, self.discards_unpushed = names_sessions, discards_unpushed
         self.spawn_calls, self.list_calls, self.stop_calls, self.remove_calls = [], [], [], []
-        self.spawn_options = []
+        self.spawn_options, self.discards = [], []
 
     def spawn(self, cwd, prompt, name=None, permission_mode=None, options=NO_OPTIONS):
         self.spawn_calls.append((cwd, prompt, name, permission_mode))
@@ -49,8 +49,9 @@ class FakeHarness:
         self.stop_calls.append(session_id)
         return session(session_id)
 
-    def remove(self, session_id):
+    def remove(self, session_id, discard_unpushed=None):
         self.remove_calls.append(session_id)
+        self.discards.append(discard_unpushed)
         if self.remove_error:
             raise self.remove_error
 
@@ -298,13 +299,64 @@ class CloseTest(ServiceTestCase):
         with self.assertRaisesRegex(HarnessError, r"^the session was stopped, but removing it failed: session aaaa1111 is still listed after removal$"):
             Jam(harness, StubRegistry()).close("aaaa1111")
 
+    def test_the_callers_own_session_is_refused_before_anything_runs(self):
+        harness = FakeHarness([session("aaaa1111")])
+        with self.assertRaisesRegex(InvalidRequest, "own session"):
+            Jam(harness, StubRegistry()).close("aaaa1111", caller=Identity("aaaa1111-full", "aaaa1111"))
+        self.assertEqual((harness.stop_calls, harness.remove_calls, harness.list_calls), ([], [], []))
+
+    def test_without_its_short_id_the_callers_own_session_is_found_by_its_full_id(self):
+        # After /clear the command line's whoami has no short id, so the row is matched by the full one.
+        harness = FakeHarness([session("bbbb2222"), session("aaaa1111")])
+        with self.assertRaisesRegex(InvalidRequest, "own session"):
+            Jam(harness, StubRegistry()).close("aaaa1111", caller=Identity("aaaa1111-full", None))
+        self.assertEqual((harness.list_calls, harness.stop_calls), ([(True, None)], []))
+
+    def test_another_session_is_closed_when_the_caller_is_known(self):
+        harness = FakeHarness([session("aaaa1111")])
+        Jam(harness, StubRegistry()).close("aaaa1111", caller=Identity("cccc3333-full", "cccc3333"))
+        self.assertEqual((harness.list_calls, harness.stop_calls, harness.remove_calls), ([], ["aaaa1111"], ["aaaa1111"]))
+
+    def test_a_caller_without_a_short_id_whose_row_is_another_closes_the_session(self):
+        harness = FakeHarness([session("aaaa1111"), session("cccc3333")])
+        Jam(harness, StubRegistry()).close("aaaa1111", caller=Identity("cccc3333-full", None))
+        self.assertEqual((harness.stop_calls, harness.remove_calls), (["aaaa1111"], ["aaaa1111"]))
+
+    def test_a_discard_value_is_handed_to_the_removal(self):
+        harness = FakeHarness([session("aaaa1111")])
+        Jam(harness, StubRegistry()).close("aaaa1111", DISCARD)
+        self.assertEqual(harness.discards, [DISCARD])
+
+    def test_a_discard_value_is_refused_before_the_stop_where_the_harness_takes_none(self):
+        harness = FakeHarness([session("aaaa1111")], discards_unpushed=False)
+        with self.assertRaisesRegex(InvalidRequest, "pass no discard_unpushed"):
+            Jam(harness, StubRegistry()).close("aaaa1111", DISCARD)
+        self.assertEqual(harness.stop_calls, [])
+
+    def test_a_malformed_discard_value_is_refused_before_the_stop(self):
+        harness = FakeHarness([session("aaaa1111")])
+        for bad in ("abc@def", "-x", f" {DISCARD}", 42):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(InvalidRequest, "invalid discard_unpushed"):
+                    Jam(harness, StubRegistry()).close("aaaa1111", bad)
+        self.assertEqual(harness.stop_calls, [])
+
+    def test_a_refusal_that_offers_a_discard_value_keeps_it_behind_the_note_that_the_session_was_stopped(self):
+        refusal = DiscardRequired("removing aaaa1111 failed (exit 1): 1 unpushed commit", DISCARD)
+        harness = FakeHarness([session("aaaa1111")], remove_error=refusal)
+        with self.assertRaises(DiscardRequired) as caught:
+            Jam(harness, StubRegistry()).close("aaaa1111")
+        self.assertEqual(str(caught.exception), "the session was stopped, but removing it failed: removing aaaa1111 failed (exit 1): 1 unpushed commit")
+        self.assertEqual(caught.exception.token, DISCARD)
+        self.assertIs(caught.exception.__cause__, refusal)
+
 
 class CloseOnClaudeTest(ServiceTestCase):
     """The commands a close runs on the real adapter, in order, against a scripted `claude`."""
 
     def close(self, *results):
         runner = FakeRunner(*results)
-        jam = Jam(ClaudeHarness(claude_bin="claude", runner=runner), Registry(self.data))
+        jam = Jam(ClaudeHarness(claude_bin="claude", runner=runner, exited=lambda pid, timeout: True), Registry(self.data))
         return jam, runner
 
     def sequence(self, runner):
@@ -341,6 +393,19 @@ class CloseOnClaudeTest(ServiceTestCase):
             jam.close("aaaa1111")
         self.assertNotIn("was stopped", str(caught.exception))
         self.assertEqual(self.sequence(runner), [["claude", "stop", "aaaa1111"]])
+
+    def test_the_observed_close_of_a_worker_with_an_unpushed_commit_and_its_discard(self):
+        # As seen on 2.1.295 (D17): the stopped process still held the worktree lock, then the commit was the refusal; a second close with the relayed value deletes it.
+        jam, runner = self.close(
+            ok("stopped bbbb2222"), agents(STOPPED), RunResult(1, LOCKED, ""), RunResult(1, UNPUSHED, ""),
+            ok("stopped bbbb2222"), agents(STOPPED), ok("removed bbbb2222"), agents(),
+        )
+        with self.assertRaises(DiscardRequired) as caught:
+            jam.close("bbbb2222")
+        jam.close("bbbb2222", caught.exception.token)
+        rm, discard = ["claude", "rm", "bbbb2222"], ["claude", "rm", "bbbb2222", "--discard-unpushed", DISCARD]
+        stop = ["claude", "stop", "bbbb2222"]
+        self.assertEqual(self.sequence(runner), [stop, ALL, rm, rm, stop, ALL, discard, ALL])
 
     def test_a_prefix_of_an_id_is_rejected_because_claude_would_resolve_it(self):
         jam, runner = self.close()

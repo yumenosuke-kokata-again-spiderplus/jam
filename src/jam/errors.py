@@ -40,6 +40,17 @@ class RegistryError(Exception):
     """
 
 
+class DiscardRequired(HarnessError):
+    """The harness kept a session over work that exists nowhere else; `token` is the value that deletes it anyway (D17).
+
+    The token is kept apart from the message, so that clipping a long refusal cannot cut it.
+    """
+
+    def __init__(self, message: str, token: str):
+        super().__init__(message)
+        self.token = token
+
+
 class StillListed(HarnessError):
     """A session that was removed still shows up in the harness listing."""
 

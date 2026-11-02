@@ -3,20 +3,23 @@
 output shapes observed from Claude Code 2.1.300, with generic ids and paths."""
 
 import json
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 import support  # noqa: F401  (puts src/ on sys.path)
 from jam.errors import (
+    DiscardRequired,
     HarnessError,
     InvalidRequest,
     StillListed,
     UnparseableOutput,
     WorkspaceNotTrusted,
 )
-from jam.harness.claude import ClaudeHarness, RunResult, run_subprocess
+from jam.harness.claude import LOCK_WAIT, ClaudeHarness, RunResult, process_exited, run_subprocess
 from jam.session import SpawnOptions
 
 LIVE = {
@@ -329,6 +332,12 @@ class StopAndRemoveTest(unittest.TestCase):
             harness.remove("bbbb2222")
         self.assertEqual(str(caught.exception), "removing bbbb2222 failed (exit 1)")
 
+    def test_a_value_after_the_discard_flag_that_is_not_a_discard_value_is_not_offered(self):
+        harness, _ = self.harness(RunResult(1, "claude rm bbbb2222 --discard-unpushed abc@def\n", ""))
+        with self.assertRaises(HarnessError) as caught:
+            harness.remove("bbbb2222")
+        self.assertNotIsInstance(caught.exception, DiscardRequired)
+
     def test_session_ids_are_validated_before_anything_runs(self):
         harness, runner = self.harness()
         # `claude stop` resolves a prefix of an id, so only the short id itself may reach it (a prefix would stop one session and look gone).
@@ -339,6 +348,133 @@ class StopAndRemoveTest(unittest.TestCase):
                 with self.assertRaises(InvalidRequest):
                     harness.remove(bad)
         self.assertEqual(runner.calls, [])
+
+
+ALL = ["claude", "agents", "--json", "--all"]
+# The two refusals `claude rm` gave on 2.1.295 right after `claude stop` of a worker with an unpushed commit, with a generic path, branch and values (D17).
+DISCARD = "1f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c@0123456789abcdef0123456789abcdef"
+UNPUSHED = (
+    "kept bbbb2222 — its worktree is still at “/work/wt”\n"
+    "  1 unpushed commit on “worktree-check”: 1f2e3d4 “test: a commit”. "
+    "It exists on no remote, so deleting the worktree would lose it.\n"
+    f"  push it and run 'claude rm bbbb2222' again, or discard the worktree and its commits: claude rm bbbb2222 --discard-unpushed {DISCARD}\n"
+)
+LOCKED = (
+    "kept bbbb2222 — its worktree is still at “/work/wt”\n"
+    "  A Claude Code lock on the worktree names a process that is still running (pid 27812).\n"
+    "  exit that session, or run 'git worktree unlock' on the worktree if the process is unrelated, then run 'claude rm bbbb2222' again\n"
+)
+
+
+class Exited:
+    """Stands in for the wait on a lock holder: records (pid, bound) and answers as told."""
+
+    def __init__(self, answer):
+        self.answer, self.calls = answer, []
+
+    def __call__(self, pid, timeout):
+        self.calls.append((pid, timeout))
+        return self.answer
+
+
+class RefusalTest(unittest.TestCase):
+    """What `remove` does with the refusals `claude rm` really gives: a discard value to relay, and a lock to wait out."""
+
+    def harness(self, *results, exited=None):
+        runner, exited = FakeRunner(*results), Exited(True) if exited is None else exited
+        return ClaudeHarness(claude_bin="claude", runner=runner, exited=exited), runner, exited
+
+    def test_it_takes_a_discard_value(self):
+        self.assertIs(ClaudeHarness.discards_unpushed, True)
+
+    def test_the_unpushed_refusal_offers_its_discard_value_apart_from_the_reason(self):
+        harness, _, _ = self.harness(RunResult(1, UNPUSHED, ""))
+        with self.assertRaises(DiscardRequired) as caught:
+            harness.remove("bbbb2222")
+        self.assertEqual(caught.exception.token, DISCARD)
+        text = str(caught.exception)
+        self.assertIn("1 unpushed commit on “worktree-check”: 1f2e3d4", text)
+        for override in ("--discard-unpushed", "claude rm", DISCARD):
+            with self.subTest(override=override):
+                self.assertNotIn(override, text)
+
+    def test_a_value_for_forcing_the_worktree_is_never_offered(self):
+        refusal = "kept bbbb2222\n  run claude rm bbbb2222 --force-remove-worktree 0123456789abcdef0123456789abcdef\n"
+        harness, _, _ = self.harness(RunResult(1, refusal, ""))
+        with self.assertRaises(HarnessError) as caught:
+            harness.remove("bbbb2222")
+        self.assertNotIsInstance(caught.exception, DiscardRequired)
+        self.assertNotIn("0123456789abcdef", str(caught.exception))
+
+    def test_a_discard_value_goes_to_claude_rm_as_given(self):
+        harness, runner, _ = self.harness(ok("removed bbbb2222"), agents())
+        harness.remove("bbbb2222", DISCARD)
+        self.assertEqual(runner.calls[0][0], ["claude", "rm", "bbbb2222", "--discard-unpushed", DISCARD])
+
+    def test_a_value_that_is_not_a_discard_value_is_refused_before_anything_runs(self):
+        harness, runner, _ = self.harness()
+        commit, worktree = DISCARD.split("@")
+        for bad in ("", "-x", "abc@def", commit, f"{commit}@", f"@{worktree}", f"{commit}@a b", f"{commit.upper()}@{worktree}", f"{commit}@{'w' * 65}", f"-{commit}@{worktree}", 123):
+            with self.subTest(bad=bad):
+                with self.assertRaises(InvalidRequest):
+                    harness.remove("bbbb2222", bad)
+        self.assertEqual(runner.calls, [])
+
+    def test_a_refusal_over_the_lock_of_the_stopped_process_waits_for_it_and_retries_once(self):
+        harness, runner, exited = self.harness(RunResult(1, LOCKED, ""), ok("removed bbbb2222"), agents())
+        harness.remove("bbbb2222")
+        self.assertEqual([call[0] for call in runner.calls], [["claude", "rm", "bbbb2222"], ["claude", "rm", "bbbb2222"], ALL])
+        self.assertEqual(exited.calls, [(27812, LOCK_WAIT)])
+
+    def test_after_the_lock_the_unpushed_refusal_still_offers_its_value(self):
+        harness, _, _ = self.harness(RunResult(1, LOCKED, ""), RunResult(1, UNPUSHED, ""))
+        with self.assertRaises(DiscardRequired) as caught:
+            harness.remove("bbbb2222")
+        self.assertEqual(caught.exception.token, DISCARD)
+
+    def test_the_retry_after_a_lock_passes_the_discard_value_again(self):
+        harness, runner, _ = self.harness(RunResult(1, LOCKED, ""), ok("removed bbbb2222"), agents())
+        harness.remove("bbbb2222", DISCARD)
+        self.assertEqual([call[0] for call in runner.calls[:2]], [["claude", "rm", "bbbb2222", "--discard-unpushed", DISCARD]] * 2)
+
+    def test_a_lock_still_held_at_the_bound_is_reported_without_a_retry(self):
+        harness, runner, _ = self.harness(RunResult(1, LOCKED, ""), exited=Exited(False))
+        with self.assertRaises(HarnessError) as caught:
+            harness.remove("bbbb2222")
+        self.assertIn("names a process that is still running (pid 27812)", str(caught.exception))
+        self.assertNotIn("claude rm", str(caught.exception))
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_the_removal_is_retried_only_once(self):
+        harness, runner, exited = self.harness(RunResult(1, LOCKED, ""), RunResult(1, LOCKED, ""))
+        with self.assertRaises(HarnessError):
+            harness.remove("bbbb2222")
+        self.assertEqual((len(runner.calls), len(exited.calls)), (2, 1))
+
+    def test_a_lock_naming_no_usable_process_is_not_waited_on(self):
+        for pid in ("0", "99999999999999"):
+            with self.subTest(pid=pid):
+                harness, runner, exited = self.harness(RunResult(1, LOCKED.replace("27812", pid), ""))
+                with self.assertRaises(HarnessError):
+                    harness.remove("bbbb2222")
+                self.assertEqual((len(runner.calls), exited.calls), (1, []))
+
+
+class ProcessExitedTest(unittest.TestCase):
+    """The default wait on a lock holder, which is not a child of jam, so it polls."""
+
+    def test_a_process_that_is_gone_is_reported_at_once(self):
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        self.assertTrue(process_exited(child.pid, 5.0))
+
+    def test_a_process_still_running_at_the_bound_is_reported_as_running(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        started = time.monotonic()
+        self.assertFalse(process_exited(child.pid, 0.3))
+        self.assertLess(time.monotonic() - started, 3.0)
 
 
 class SubprocessRunnerTest(unittest.TestCase):

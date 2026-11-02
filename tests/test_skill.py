@@ -167,9 +167,16 @@ class BodyTest(unittest.TestCase):
                 self.assertIsNone(PATH_TOKEN.search(text))
 
     def test_it_relies_on_the_native_messaging_tools_by_name(self):
-        for phrase in ("`SendMessage`", "`ListAgents`", "`notify_when_idle: true`", "copy its `from` as your `to`"):
+        for phrase in ("`SendMessage`", "`ListAgents`", "`notify_when_idle: true`"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.text)
+
+    def test_a_reply_goes_to_the_senders_name_because_a_socket_path_goes_stale(self):
+        self.assertIn("use its `from-name` as your `to` when it has one, else its `from`: a socket path in `from` goes stale", self.text)
+        self.assertNotIn("copy its `from` as your `to`", self.text)
+
+    def test_an_idle_notice_after_a_checked_report_needs_nothing(self):
+        self.assertIn("An idle notice from a session whose report you already received and checked needs no action.", self.text)
 
     def test_the_idle_notice_is_a_call_the_tool_accepts(self):
         for phrase in (
@@ -221,16 +228,21 @@ class BodyTest(unittest.TestCase):
     def test_it_stops_what_the_stop_contract_allows_and_no_less(self):
         self.assertIn("a session you started, or one the owner asked you to stop", self.text)
 
-    def test_it_closes_only_when_the_owner_asks_and_never_forces_a_refusal(self):
+    def test_it_closes_on_the_owners_word_or_standing_instruction_and_discards_only_merged_work(self):
         for phrase in (
-            "When the owner asks you to close or remove a session, use `close`",
-            "it stops the session and deletes it",
-            "A refusal (unpushed commits, uncommitted changes) goes back to the owner",
-            "jam never forces a delete, and you do not work around it",
+            "`close` stops a session and deletes it: use it when the owner asks you to close or remove one, "
+            "or told you to close the sessions you start once their work is done.",
+            "jam refuses to close your own.",
+            "A refusal over an unpushed commit ends with a `discard_unpushed` value: pass it to `close` only when "
+            "that commit is the head of a merged pull request",
+            "else take the refusal to the owner",
+            "jam never forces any other refusal, and you do not work around it.",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.text)
-        self.assertNotIn("Removing a stopped session is up to the owner", self.text)
+        for removed in ("Removing a stopped session is up to the owner", "A refusal (unpushed commits, uncommitted changes) goes back to the owner"):
+            with self.subTest(removed=removed):
+                self.assertNotIn(removed, self.text)
 
     def test_the_guard_text_it_quotes_is_the_one_the_guard_prints(self):
         notice = lazy("jam.harness.notice")

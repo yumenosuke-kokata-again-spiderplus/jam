@@ -15,14 +15,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol
 
-from .errors import HarnessError, RegistryError
+from .errors import DiscardRequired, HarnessError, InvalidRequest, RegistryError
 from .naming import prefixed, project_label
 from .registry import Record, Registry, spawned_marked
-from .session import NO_OPTIONS, Session, SpawnOptions, Spawned
+from .session import NO_DISCARD, NO_OPTIONS, Identity, Session, SpawnOptions, Spawned, is_discard_value
 
 
 class Harness(Protocol):
     names_sessions: bool  # whether `spawn` takes a name; only then does the name get its project prefix (D19)
+    discards_unpushed: bool  # whether `remove` takes the value a refusal over unpushed work names (D17)
 
     def spawn(
         self,
@@ -37,7 +38,7 @@ class Harness(Protocol):
 
     def stop(self, session_id: str) -> Session | None: ...
 
-    def remove(self, session_id: str) -> None: ...
+    def remove(self, session_id: str, discard_unpushed: str | None = None) -> None: ...
 
 
 class TicketWriter(Protocol):
@@ -85,6 +86,13 @@ def joined(sessions: Sequence[Session], records: Mapping[str, Record | None]) ->
 # Leads a close failure that came after the stop, so that clipping a long harness message cannot cut it off. It claims only that the removal step failed:
 # the session is stopped, and whether it is still listed is for `list` to say.
 STOPPED_NOT_REMOVED: Final = "the session was stopped, but removing it failed: "
+OWN_SESSION: Final = "refusing to close the caller's own session (as whoami names it); only its owner may end it that way"
+
+
+def _after_stop(exc: HarnessError) -> HarnessError:
+    """A removal failure led by the note that the session was stopped, keeping the value that discards its work if one was named."""
+    message = f"{STOPPED_NOT_REMOVED}{exc}"
+    return DiscardRequired(message, exc.token) if isinstance(exc, DiscardRequired) else HarnessError(message)
 
 
 def failure_reason(exc: Exception) -> str:
@@ -137,23 +145,38 @@ class Jam:
         # A stopped session stays in the full listing, so its note stays true.
         return self._harness.stop(session_id)
 
-    def close(self, session_id: str) -> None:
+    def close(self, session_id: str, discard_unpushed: str | None = None, caller: Identity | None = None) -> None:
         """Stop the session, then delete it unless stopping already did; the harness decides what a delete refuses.
 
         The one place that deletes a session, and only on the owner's say-so
-        (the tool description and the skill carry that). jam never forces a
-        refusal. Stopping comes first for every session: it ends a run that is
-        still going, it is harmless on one that is stopped but still listed
-        (observed, D17), and on the Devin CLI it is the deletion itself, which
-        leaves no row to remove. A failure of the removal comes back saying the
-        session was stopped, because a refusal leaves it stopped and still listed.
+        (the tool description and the skill carry that). The caller's own
+        session is refused before anything runs; a caller the harness cannot
+        name has no session here. jam forces no refusal: `discard_unpushed` is
+        only the value an earlier refusal named, passed on as given. Stopping
+        comes first for every session: it ends a run that is still going, it
+        is harmless on one that is stopped but still listed (observed, D17),
+        and on the Devin CLI it is the deletion itself, which leaves no row to
+        remove. A failure of the removal comes back saying the session was
+        stopped, because a refusal leaves it stopped and still listed.
         """
+        if discard_unpushed is not None and not self._harness.discards_unpushed:
+            raise InvalidRequest(NO_DISCARD)
+        if discard_unpushed is not None and not is_discard_value(discard_unpushed):
+            raise InvalidRequest(f"invalid discard_unpushed value: {discard_unpushed!r}")
+        if caller is not None and self._callers_own(session_id, caller):
+            raise InvalidRequest(OWN_SESSION)
         if self._harness.stop(session_id) is None:
             return
         try:
-            self._harness.remove(session_id)
+            self._harness.remove(session_id, discard_unpushed)
         except HarnessError as exc:
-            raise HarnessError(f"{STOPPED_NOT_REMOVED}{exc}") from exc
+            raise _after_stop(exc) from exc
+
+    def _callers_own(self, session_id: str, caller: Identity) -> bool:
+        """Whether `session_id` is the caller's session: by its short id, or, when that is unknown (after /clear), by the row of its full id."""
+        if caller.id is not None:
+            return caller.id == session_id
+        return any(row.id == session_id and row.session_id == caller.session_id for row in self._harness.list(include_exited=True))
 
     def _issued(self, cwd: str | Path) -> tuple[str | None, Exception | None]:
         """The ticket written for `cwd` and None, or None and the error that kept it from being written. Never raises."""

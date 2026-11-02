@@ -1034,16 +1034,42 @@ a `remove` verb.
   of a session that is stopped but still listed exits 0 (see "Verified"). A
   session that is no longer listed once it is stopped is not deleted a second
   time: that is the Devin CLI, where stopping removes the row (D16). An id the harness does not know fails at the stop, in the harness's words. The Claude adapter passes on only the whole short id (eight hexadecimal characters, the form of the spawn output), because `claude stop` and `claude rm` match the start of an id: a prefix would stop one session, find no row with that exact id, and read as a session that stopping had deleted.
-- **Who may use it.** Only when the owner asked to close or remove the session.
+- **Who may use it.** Only when the owner asked to close or remove the session, or told the model to close the sessions it starts once their work is done (added on 2026-11-02, issue #37).
   `stop` stays the verb for a session a model started and has nothing left to do for, and on Claude Code it keeps the conversation. On the Devin CLI stopping already deletes the record (D16), so there the two end the same way and only the owner's say-so separates them; the `stop` description says so. That answers the question issue #32
   left to the owner, whether a model may delete the sessions it started: not on
   its own initiative. Nothing in code can tell who is asking (sessions are
   peers, D10), so, like the self-stop warning (D12), the tool description and
-  the skill (D15) carry the rule.
+  the skill (D15) carry the rule. The one caller code can tell is the session
+  itself (next bullet).
+- **The caller's own session is refused (2026-11-02, issue #37).** `close`
+  refuses the caller's own session before anything runs. The caller is the
+  session `whoami` names: its short id, or, when that is unknown (after
+  `/clear`), the row whose full id matches. Where `whoami` cannot answer (the
+  Devin CLI, a plain shell), no session is the caller's own and the close goes
+  on. A session that closed itself would end the turn that asked, with nobody
+  left to report the outcome, so the description's warning became a check.
 - **Refusals are never forced.** `claude rm` has two flags that override a
   refusal, `--discard-unpushed` for unpushed commits and uncommitted changes and
   `--force-remove-worktree` for a worktree that cannot be removed, and each takes
-  a value that a previous `claude rm` reported. jam passes neither. A failure of the removal comes back as the harness's own words behind "the session was stopped, but removing it failed: ". The note leads so that clipping a long message cannot drop it, and it claims only that the removal step failed, because a failed re-check after a successful `rm` reads the same; `list` says whether the session is still there. `claude rm` reports a refusal on stdout, not stderr, together with the commands that override it (read from the strings of the 2.1.309 binary; no live refusal was seen), so the adapter relays the reason lines and drops any line that names `--discard-unpushed`, `--force-remove-worktree`, `ctrl+x` or the `claude rm` command. The owner decides what to do with the worktree and asks again.
+  a value that a previous `claude rm` reported. jam never passes `--force-remove-worktree`, and passes `--discard-unpushed` only with a value the caller gives as `discard_unpushed` (`--discard-unpushed` on the command line), checked first as a commit and a worktree id (`<40 to 64 hexadecimal digits>@<id>`). A failure of the removal comes back as the harness's own words behind "the session was stopped, but removing it failed: ". The note leads so that clipping a long message cannot drop it, and it claims only that the removal step failed, because a failed re-check after a successful `rm` reads the same; `list` says whether the session is still there. `claude rm` reports a refusal on stdout, not stderr, together with the commands that override it, so the adapter relays the reason lines and drops any line that names `--discard-unpushed`, `--force-remove-worktree`, `ctrl+x` or the `claude rm` command. The value named after `--discard-unpushed` comes back apart from the reason, at the end of the failure where clipping cannot cut it, with when it may be passed. Any other refusal goes to the owner, who decides what to do with the worktree and asks again.
+- **Why the discard value is relayed (2026-11-02, issue #37).** A worker that
+  commits on its worktree branch, opens a pull request that is squash-merged,
+  and has the branch deleted on merge leaves commits that exist on no remote,
+  so `claude rm` refuses it although the work is merged, and every such close
+  came back to the owner. The tool description, the failure text and the skill
+  give one rule for passing the value: the commit it names is the head of a
+  merged pull request, or the owner said to drop the work. jam cannot check that
+  rule (it would need the forge), so, like the owner's say-so, it lives in text.
+- **The lock of the stopping process (2026-11-02).** A `claude rm` run right
+  after `claude stop` once refused because "A Claude Code lock on the worktree
+  names a process that is still running (pid N)", and a retry a few seconds
+  later gave the next refusal. Another session met the same refusal that day,
+  and `claude rm` went through once the process had exited. The adapter waits
+  for that pid to exit, polling
+  for up to 15 seconds (it is not jam's child, so it cannot be waited on), then
+  runs `claude rm` once more with the same arguments. A lock still held at the
+  bound is reported as it is, so a lock held by an unrelated session is never
+  broken.
 - **The registry.** A closed session's note stays until the sweep removes it by
   age (D11). The listing only annotates rows that exist, so the note is never
   shown, and `close` leaves the registry alone, as `stop` does.
@@ -1063,13 +1089,44 @@ a `remove` verb.
   job matching '<id>'", and an id with a space failed as an invalid id before
   `claude` ran. A second `claude stop` of a stopped, still listed session
   printed `stopped <id>` and exited 0. The adapter's command sequence and the
-  refusal text are covered by unit tests against a scripted `claude`. A real refusal, over unpushed commits or uncommitted changes, was not provoked here, so the stdout form of its text is unobserved,
+  refusal text are covered by unit tests against a scripted `claude`. A real refusal, over unpushed commits or uncommitted changes, was not provoked here, so the stdout form of its text is unobserved (until 2026-11-02, below),
   and `claude rm` on a running session without a stop was not tried: its help
   says it also "works on already-exited sessions", so the stop stays first. The Devin side is covered by unit tests only, through the real adapter over a scripted `devin` and a temporary store. Observed once and not explained: two
   workers that had finished a turn (`state: done`, `status: idle`, a live pid)
   were gone from `claude agents --all` within about half a minute, before any
   `stop` or `rm` was run on them, so a session can vanish between the listing
   and the deletion.
+- **A stopped session that comes back (2026-11-02, issue #37).** During a day
+  of parallel background sessions, a stopped session was later listed as
+  working or idle again. Checked the same day on Claude Code 2.1.295: a
+  `SendMessage` to a stopped session fails ("No agent named … is reachable")
+  and does not wake it. Two stopped throwaway sessions came back, one about
+  seventeen minutes after its stop, and one after about twenty-five, which had
+  a pending `notify_when_idle` subscription. Each was listed again as
+  `state: done`, `status: idle`, with a new pid and its `startedAt` reset to
+  the moment it came back. That pid was the warm `bg-spare` process the
+  background supervisor keeps ready for the next session, and it took no turn:
+  nothing was added to either transcript. One came back three seconds after
+  this session spawned a worker, the other with no command from this session
+  near it. What tells the supervisor to restore a stopped session was not
+  found. `close` does not depend on it: it stops first, and a session that
+  came back was closed like any other (next bullet).
+- **Verified (2026-11-02, Claude Code 2.1.295).** Through the command line of
+  this change:
+  - `close` of the calling session's own id failed with the refusal before any
+    `claude` command ran.
+  - The worker with an unpushed commit had come back as above. Its `close`
+    ended with the refusal's reason lines ("1 unpushed commit on …. It exists
+    on no remote, so deleting the worktree would lose it.") and the value at
+    the end. A second `close` with `--discard-unpushed <value>` printed
+    `{"id": …, "closed": true}`, and the session, its worktree and its branch
+    were gone.
+  - The lock refusal was seen once, when `claude rm` ran at once after
+    `claude stop` with no listing in between. Two traced closes of workers
+    that had a worktree, one idle and one busy in a `sleep`, met no lock: the
+    listing between the stop and the removal gave the process time to exit,
+    and `claude rm` succeeded at the first try. The wait and the single retry
+    are covered by unit tests only.
 
 ## D18. Choosing the model per session
 

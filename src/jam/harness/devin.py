@@ -33,7 +33,7 @@ from ..errors import (
     StillListed,
     WorkspaceNotTrusted,
 )
-from ..session import NO_OPTIONS, Session, SpawnOptions, Spawned, is_id, is_model
+from ..session import NO_DISCARD, NO_OPTIONS, Session, SpawnOptions, Spawned, is_id, is_model
 from .claude import Runner, run_subprocess
 
 SPAWN_VISIBLE: Final = 20.0  # bound for the new session to appear in `devin list`
@@ -90,6 +90,7 @@ Spawner = Callable[[Sequence[str], str], "tuple[Any, str]"]
 
 class DevinHarness:
     names_sessions: Final = False  # Devin titles a session itself, so a name is refused and no prefix is made (D19)
+    discards_unpushed: Final = False  # no worktree, so no refusal over unpushed work and no value to pass (D17)
 
     def __init__(
         self,
@@ -166,9 +167,11 @@ class DevinHarness:
         self._drop_pid(session_id)
         return self._db_row(session_id)
 
-    def remove(self, session_id: str) -> None:
-        """Delete a session record, then check it is gone from the store."""
+    def remove(self, session_id: str, discard_unpushed: str | None = None) -> None:
+        """Delete a session record, then check it is gone from the store. Devin keeps no worktree, so there is nothing to discard (D17)."""
         session_id = self._valid_id(session_id)
+        if discard_unpushed is not None:
+            raise InvalidRequest(NO_DISCARD)
         result = self._run([self._bin, "rm", session_id], None)
         if result.returncode != 0:
             raise HarnessError(f"removing {session_id} failed (exit {result.returncode}): {result.stderr.strip()}")

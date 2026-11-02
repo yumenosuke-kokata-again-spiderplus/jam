@@ -17,7 +17,8 @@ class ReadmeTest(unittest.TestCase):
         self.assertIn("verbs: spawn / list / stop / close / whoami", design)
         self.assertIn("`spawn`, `list`, `stop`, `close`, and `whoami` as tools", design)
         self.assertIn("with `spawn`, `list`, `stop`, `close`, and `whoami`", flat(section(README, "Status")))
-        self.assertIn("**close** it, which also deletes it, when the owner asks for that (D17)", flat(section(README, "What it does")))
+        self.assertIn("**close** it, which also deletes it, when the owner asks for that or has said to (D17)", flat(section(README, "What it does")))
+        self.assertIn("A session cannot close itself, and work that exists nowhere else is deleted only with the value its refusal named.", flat(README))
         for removed in ("verbs: spawn / list / stop / whoami", "`stop`, and `whoami` as tools", "`stop`, and `whoami`, plus three"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, flat(README))
@@ -57,10 +58,12 @@ class DecisionsTest(unittest.TestCase):
             "a Devin row never carries a `status`",
             "A session that is no longer listed once it is stopped is not deleted a second time",
             "An id the harness does not know fails at the stop, in the harness's words.",
-            "Only when the owner asked to close or remove the session.",
+            "Only when the owner asked to close or remove the session,",
             "not on its own initiative",
             "Nothing in code can tell who is asking (sessions are peers, D10)",
-            "jam passes neither",
+            "or told the model to close the sessions it starts once their work is done (added on 2026-11-02, issue #37)",
+            "jam never passes `--force-remove-worktree`, and passes `--discard-unpushed` only with a value the caller gives as `discard_unpushed`",
+            "The value named after `--discard-unpushed` comes back apart from the reason, at the end of the failure where clipping cannot cut it",
             'behind "the session was stopped, but removing it failed: "',
             "The note leads so that clipping a long message cannot drop it",
             "`claude rm` reports a refusal on stdout, not stderr, together with the commands that override it",
@@ -73,9 +76,27 @@ class DecisionsTest(unittest.TestCase):
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, d17)
-        for removed in ("was_running", "looks the id up in the full listing", "An id that is not listed is a failure", "comes back as it is", "stopped but not removed"):
+        for removed in ("was_running", "looks the id up in the full listing", "An id that is not listed is a failure", "comes back as it is", "stopped but not removed", "jam passes neither", "no live refusal was seen"):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, d17)
+
+    def test_d17_records_the_additions_of_issues_37_and_38(self):
+        d17 = flat(section(DECISIONS, "D17."))
+        for phrase in (
+            "**The caller's own session is refused (2026-11-02, issue #37).**",
+            "Where `whoami` cannot answer (the Devin CLI, a plain shell), no session is the caller's own and the close goes on.",
+            "**Why the discard value is relayed (2026-11-02, issue #37).**",
+            "the commit it names is the head of a merged pull request, or the owner said to drop the work",
+            "**The lock of the stopping process (2026-11-02).**",
+            "A lock still held at the bound is reported as it is",
+            "**A stopped session that comes back (2026-11-02, issue #37).**",
+            "and does not wake it",
+            "What tells the supervisor to restore a stopped session was not found.",
+            "**Verified (2026-11-02, Claude Code 2.1.295).**",
+            "The wait and the single retry are covered by unit tests only.",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, d17)
 
     def test_d17_names_what_it_rejected_and_what_it_did_not_verify(self):
         d17 = flat(section(DECISIONS, "D17."))

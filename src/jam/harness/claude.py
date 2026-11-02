@@ -11,22 +11,27 @@ import json
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Optional
 
 from ..errors import (
+    DiscardRequired,
     HarnessError,
     InvalidRequest,
     StillListed,
     UnparseableOutput,
     WorkspaceNotTrusted,
 )
-from ..session import EFFORTS, NO_OPTIONS, Session, SpawnOptions, Spawned, is_model
+from ..session import EFFORTS, NO_OPTIONS, Session, SpawnOptions, Spawned, is_discard_value, is_model
 from .claude_env import subagent_settings
 
 DEFAULT_TIMEOUT: Final = 60.0
+# `claude rm` right after `claude stop` can find the worktree still locked by the stopping process (D17): wait this long for it, polling.
+LOCK_WAIT: Final = 15.0
+LOCK_POLL: Final = 0.2
 
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SPAWNED: Final = re.compile(r"^backgrounded\s*·\s*([0-9a-f]{8})(?:\s*·\s*(\S.*?))?\s*$", re.MULTILINE)
@@ -37,9 +42,13 @@ _NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _MODE: Final = re.compile(r"[A-Za-z][A-Za-z0-9]{0,31}")
 # `claude stop` and `claude rm` match the start of an id, so a prefix would stop one session and then look gone; only the whole short id is passed on.
 _SHORT_ID: Final = re.compile(r"[0-9a-f]{8}")
-# `claude rm` reports a refusal on stdout, and the same text names the commands that override it (read from the strings of the 2.1.309 binary, D17; no live refusal was seen).
-# Those lines are dropped: jam never forces a removal and must not hand the way to the model.
+# `claude rm` reports a refusal on stdout, and the same text names the commands that override it (seen live on 2.1.295, D17).
+# Those lines are dropped from the reason. The value for `--discard-unpushed` is relayed apart, with when it may be passed;
+# `--force-remove-worktree` never reaches the model.
 _OVERRIDES: Final = ("--discard-unpushed", "--force-remove-worktree", "ctrl+x", "claude rm ")
+_DISCARD_OFFER: Final = re.compile(r"--discard-unpushed\s+(\S+)")
+# The refusal that names the stopping session's process as the holder of the worktree lock; at most nine digits, so it is a pid os.kill takes.
+_LOCKED: Final = re.compile(r"lock on the worktree names a process that is still running \(pid (\d{1,9})\)")
 
 
 def _matches(pattern: re.Pattern[str], value: object) -> bool:
@@ -94,12 +103,45 @@ def run_subprocess(args: Sequence[str], cwd: str | None, timeout: float = DEFAUL
     return RunResult(proc.returncode, proc.stdout, proc.stderr)
 
 
+def _lock_holder(result: RunResult) -> Optional[int]:
+    """The pid a refusal names as still holding the worktree lock, or None for any other outcome."""
+    found = _LOCKED.search(_ANSI.sub("", result.stdout)) if result.returncode != 0 else None
+    pid = int(found.group(1)) if found else 0
+    return pid if pid > 0 else None
+
+
+def _running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # it exists, under another user
+        return True
+    return True
+
+
+def process_exited(pid: int, timeout: float) -> bool:
+    """Whether process `pid` is gone within `timeout` seconds. It is not jam's child, so the only way to learn is to poll."""
+    deadline = time.monotonic() + timeout
+    while _running(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(LOCK_POLL)
+    return True
+
+
+# (pid, seconds) -> whether that process is gone in time; the seam that keeps tests from waiting.
+Exited = Callable[[int, float], bool]
+
+
 class ClaudeHarness:
     names_sessions: Final = True  # `claude --bg -n NAME`; the core puts the project in front (D19)
+    discards_unpushed: Final = True  # `claude rm --discard-unpushed VALUE` with the value a refusal named (D17)
 
-    def __init__(self, claude_bin: str = "claude", runner: Runner | None = None):
+    def __init__(self, claude_bin: str = "claude", runner: Runner | None = None, exited: Exited | None = None):
         self._bin = claude_bin
         self._run: Runner = runner or run_subprocess
+        self._exited: Exited = exited or process_exited
 
     def spawn(
         self,
@@ -177,24 +219,41 @@ class ClaudeHarness:
             raise HarnessError(f"stopping {session_id} failed (exit {result.returncode}): {result.stderr.strip()}")
         return self._listed(session_id)
 
-    def remove(self, session_id: str) -> None:
-        """Delete a session, then check that it is gone from the full listing."""
+    def remove(self, session_id: str, discard_unpushed: str | None = None) -> None:
+        """Delete a session, then check that it is gone from the full listing.
+
+        `discard_unpushed` is passed only as given: the value an earlier refusal
+        over unpushed commits named, which deletes them with the worktree (D17).
+        """
         session_id = self._valid_id(session_id)
-        result = self._run([self._bin, "rm", session_id], None)
+        if discard_unpushed is not None and not is_discard_value(discard_unpushed):
+            raise InvalidRequest(f"invalid discard_unpushed value: {discard_unpushed!r}")
+        args = [self._bin, "rm", session_id, *(["--discard-unpushed", discard_unpushed] if discard_unpushed is not None else [])]
+        result = self._removed(args)
         if result.returncode != 0:
-            raise HarnessError(self._removal_failure(session_id, result))
+            raise self._removal_failure(session_id, result)
         if self._listed(session_id) is not None:
             raise StillListed(session_id)
+
+    def _removed(self, args: Sequence[str]) -> RunResult:
+        """`claude rm`, run once more when it refused only because the stopping process still held the worktree lock and has since exited."""
+        result = self._run(args, None)
+        pid = _lock_holder(result)
+        if pid is None or not self._exited(pid, LOCK_WAIT):
+            return result
+        return self._run(args, None)
 
     def _listed(self, session_id: str) -> Session | None:
         return next((s for s in self.list(include_exited=True) if s.id == session_id), None)
 
     @staticmethod
-    def _removal_failure(session_id: str, result: RunResult) -> str:
-        shown = (_ANSI.sub("", line).strip() for line in result.stdout.splitlines())
+    def _removal_failure(session_id: str, result: RunResult) -> HarnessError:
+        shown = [_ANSI.sub("", line).strip() for line in result.stdout.splitlines()]
         reasons = " ".join(line for line in shown if line and not any(token in line.lower() for token in _OVERRIDES))
         detail = " | ".join(part for part in (result.stderr.strip(), reasons) if part)
-        return f"removing {session_id} failed (exit {result.returncode})" + (f": {detail}" if detail else "")
+        message = f"removing {session_id} failed (exit {result.returncode})" + (f": {detail}" if detail else "")
+        token = next((found.group(1) for found in map(_DISCARD_OFFER.search, shown) if found and is_discard_value(found.group(1))), None)
+        return HarnessError(message) if token is None else DiscardRequired(message, token)
 
     @staticmethod
     def _valid_id(session_id: str) -> str:

@@ -13,7 +13,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Final, Optional
 
-from .errors import HarnessError, InvalidRequest, RegistryError, UnparseableOutput, WorkspaceNotTrusted
+from .errors import DiscardRequired, HarnessError, InvalidRequest, RegistryError, UnparseableOutput, WorkspaceNotTrusted
 from .service import Listed, Listing, SpawnResult
 from .session import Identity, Session
 
@@ -21,6 +21,11 @@ MAX_FAILURE_CHARS: Final = 2000
 MAX_RAW_CHARS: Final = 200
 NOT_STARTED: Final = " | nothing was started; do not retry until the owner confirms"
 MAYBE_STARTED: Final = " | a session may have started: run list before retrying"
+# Ends a refusal over unpushed work (D17); kept apart from the message so that clipping never cuts the value.
+DISCARDABLE: Final = (
+    " | close again with discard_unpushed {token} (--discard-unpushed on the command line) to delete that work too,"
+    " only if that commit is the head of a merged pull request or the owner said to drop it"
+)
 _ANSI: Final = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")
 
 
@@ -112,6 +117,8 @@ def described(exc: Exception) -> tuple[str, str]:
     """
     if isinstance(exc, InvalidRequest):
         return str(exc), ""
+    if isinstance(exc, DiscardRequired):
+        return str(exc), DISCARDABLE.format(token=exc.token)
     if isinstance(exc, WorkspaceNotTrusted):
         return str(exc), NOT_STARTED
     if isinstance(exc, UnparseableOutput):
